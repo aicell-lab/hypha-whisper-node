@@ -11,11 +11,20 @@ webrtcvad then verifies the chunk actually contains speech frames before
 enqueueing it, dropping false positives (loud bangs, clicks, fan noise).
 """
 
+import ctypes
 import queue
 from typing import Optional
 import numpy as np
 import webrtcvad
 import speech_recognition as sr
+
+# Silence ALSA lib error messages globally (they spam stderr when PyAudio
+# probes unavailable virtual PCM devices like hdmi, modem, rear, etc.)
+try:
+    _asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+    _asound.snd_lib_error_set_handler(ctypes.c_void_p(None))
+except OSError:
+    pass
 
 
 SAMPLE_RATE = 16000       # Hz — native rate of HIK mic, required by Whisper

@@ -17,10 +17,15 @@ Build a portable, real-time speech-to-text edge node that:
 
 ### Phase 1 — Environment Setup
 - [x] Verify CUDA availability — **JetPack 6.2 (L4T R36.5), CUDA 12.6, Python 3.10.12** confirmed
-- [ ] Install Python deps for new environment (python3-pip, portaudio19-dev, ffmpeg via apt; PyTorch from NVIDIA JP6.2 wheel)
-  - PyTorch wheel: `https://developer.download.nvidia.com/compute/redist/jp/v62/pytorch/`
-  - openai-whisper, SpeechRecognition, pyaudio, webrtcvad, hypha-rpc
-  - No LD_LIBRARY_PATH workaround needed on JP6
+- [x] Install Python deps for new environment (python3-pip via get-pip.py; portaudio19-dev, ffmpeg via apt; PyTorch from NVIDIA JP6.1 wheel)
+  - pip installed to `~/.local/bin` via `python3 get-pip.py --user`
+  - PyTorch 2.5.0 NVIDIA wheel from `https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/` (JP6.2 wheel not yet published; JP6.1 wheel works on CUDA 12.6)
+  - `libcusparseLt.so.0` missing on JP6.2 — extracted from NVIDIA CUDA sbsa repo `.deb` into `~/.local/lib/`
+  - `LD_LIBRARY_PATH="$HOME/.local/lib:/usr/local/cuda/lib64"` added to `~/.bashrc`
+  - openai-whisper 20250625, SpeechRecognition 3.10.4, webrtcvad 2.0.10, hypha-rpc 0.21.31 installed ✅
+  - portaudio19-dev + ffmpeg still needed (`sudo apt-get install -y portaudio19-dev ffmpeg`) → then `pip install --user pyaudio`
+  - CUDA confirmed: torch.cuda.is_available()=True, device=Orin ✅
+  - Whisper base.en GPU latency ~3.5s first run (JIT warm-up), ~0.4s subsequent ✅
 - [x] Verify HIKVISION USB camera mic is detected — **card 0** `hw:0,0` on new OS
 
 ### Phase 2 — Audio Capture (HIKVISION USB mic)
@@ -38,17 +43,19 @@ Build a portable, real-time speech-to-text edge node that:
 - [x] Latency target <2s — all model sizes PASS
 
 ### Phase 4 — Hypha RPC Integration
-- [x] Install hypha-rpc 0.20.48 (already present)
-- [x] Write `rpc/hypha_client.py` — HyphaClient class, protected visibility, exponential backoff reconnect
-- [x] Expose `stream_transcripts()` async generator + `health()` via Hypha RPC
+- [x] Install hypha-rpc 0.21.31 (latest, installed fresh on JP6.2)
+- [x] Write `rpc/hypha_client.py` — HyphaClient class, public visibility, exponential backoff reconnect
+- [x] Expose `GET /transcript_feed` (SSE) + `GET /health` (JSON) via Hypha **ASGI** service (`type="asgi"`)
+  - Replaced RPC `stream_transcripts()` with FastAPI StreamingResponse (`text/event-stream`)
+  - On disconnect: mic queue drained so next session starts clean
 - [x] Connection to https://hypha.aicell.io/ confirmed ✅
 
 ---
 
 ### Phase 5 — Main Orchestration
-- [ ] Write `main.py` — wire audio capture → VAD → Whisper → Hypha RPC
-- [ ] Add CLI args: `--server`, `--token`, `--model`, `--device`
-- [ ] Add graceful shutdown (Ctrl+C, reconnect on disconnect)
+- [x] Write `main.py` — wire audio capture → VAD → Whisper → Hypha RPC
+- [x] Add CLI args: `--server`, `--token`, `--model`, `--device`
+- [x] Add graceful shutdown (Ctrl+C / SIGTERM → mic.stop() + task cancel)
 
 ### Phase 6 — Packaging & Deployment
 

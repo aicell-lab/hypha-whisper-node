@@ -4,8 +4,14 @@
 # Step 1 — system packages (requires sudo):
 #   sudo apt-get install -y python3-pip python3-venv portaudio19-dev ffmpeg
 #
-# Step 2 — PyTorch from NVIDIA JetPack 6.2 wheel (pick latest cp310 wheel):
-#   pip install https://developer.download.nvidia.com/compute/redist/jp/v62/pytorch/<wheel>.whl
+# Step 2 — PyTorch from NVIDIA JetPack 6.1 wheel (JP6.2 wheel not yet published; JP6.1 works on CUDA 12.6):
+#   pip install https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl
+#
+#   libcusparseLt is missing on JP6.2 — extract from NVIDIA sbsa repo and add to LD_LIBRARY_PATH:
+#   wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/sbsa/libcusparselt0_0.6.3.2-1_arm64.deb
+#   mkdir -p ~/.local/lib && ar x libcusparselt0_0.6.3.2-1_arm64.deb && tar -xf data.tar.xz
+#   cp usr/lib/aarch64-linux-gnu/libcusparseLt.so.0* ~/.local/lib/
+#   echo 'export LD_LIBRARY_PATH="$HOME/.local/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' >> ~/.bashrc
 #
 # Step 3 — install the rest:
 #   pip install -r requirements.txt
@@ -18,3 +24,4 @@ webrtcvad==2.0.10
 pyyaml==6.0.3
 hypha-rpc
 pyaudio
+fastapi
