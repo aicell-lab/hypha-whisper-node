@@ -30,10 +30,13 @@ Build a portable, real-time speech-to-text edge node that:
 - [x] Add VAD — webrtcvad 2.0.10, aggressiveness=2, 20ms frames, 30% voiced ratio threshold
 
 ### Phase 3 — Whisper Transcription
-- [ ] Benchmark Whisper model sizes on Jetson (tiny / base / small)
-- [ ] Write `transcribe/whisper_engine.py` — load model, expose `transcribe(audio_chunk)` method
-- [ ] Integrate openai-whisper
-- [ ] Test end-to-end latency (target: < 2 s for short utterances)
+- [x] Benchmark Whisper model sizes on Jetson — results (2s audio, GPU):
+  - tiny.en:  0.19s avg ✅  (load 6s)
+  - base.en:  0.40s avg ✅  (load 4s)  ← default
+  - small.en: 0.92s avg ✅  (load 26s)
+- [x] Write `transcribe/whisper_engine.py` — WhisperEngine class, fp16=False, language="en"
+- [x] Integrate openai-whisper — GPU confirmed, model on cuda:0
+- [x] Latency target <2s — all model sizes PASS
 
 ### Phase 4 — Hypha RPC Integration
 - [ ] Install `hypha-rpc` (`pip install hypha-rpc`)
