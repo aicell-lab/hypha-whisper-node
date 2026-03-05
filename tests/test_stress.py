@@ -89,7 +89,9 @@ async def test_sustained_pipeline_ci(tone_pcm):
     and HYPHA_WORKSPACE_TOKEN set.
     """
     import os
+    import uuid
     import httpx
+    import rpc.hypha_client as _hc_module
     from tests.conftest import MockMicCapture
     from transcribe.whisper_engine import WhisperEngine
     from rpc.hypha_client import HyphaClient
@@ -101,6 +103,9 @@ async def test_sustained_pipeline_ci(tone_pcm):
 
     N_CHUNKS = 15
     MAX_EVENT_LATENCY_S = 10.0   # generous for CPU-only CI runners
+
+    svc_id = f"hypha-whisper-test-{uuid.uuid4().hex[:8]}"
+    _hc_module.SERVICE_ID = svc_id
 
     engine = WhisperEngine(model_name="tiny.en")
     mic = MockMicCapture([tone_pcm] * N_CHUNKS)
@@ -116,7 +121,7 @@ async def test_sustained_pipeline_ci(tone_pcm):
     await client._register()
 
     ws = client._server.config.workspace
-    url = f"https://hypha.aicell.io/{ws}/apps/hypha-whisper/transcript_feed"
+    url = f"https://hypha.aicell.io/{ws}/apps/{svc_id}/transcript_feed"
     print(f"\n[ci-stress] {N_CHUNKS} chunks → {url}")
 
     events = []

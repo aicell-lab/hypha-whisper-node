@@ -14,8 +14,10 @@ In CI: token is injected via GitHub Actions secrets.
 
 import os
 import asyncio
+import uuid
 import httpx
 import pytest
+import rpc.hypha_client as _hc_module
 
 
 # ---------------------------------------------------------------------------
@@ -31,8 +33,18 @@ def _creds():
 
 
 async def _register_client(token, workspace, mic, engine):
-    """Connect to Hypha and register the ASGI service; return the client."""
+    """
+    Connect to Hypha and register the ASGI service with a unique service ID
+    so back-to-back test registrations never collide on the server.
+    Returns (client, service_id).
+    """
     from rpc.hypha_client import HyphaClient
+
+    # Use a fresh unique ID for each test registration to avoid Hypha routing
+    # stale connections when tests run back-to-back with the same service ID.
+    svc_id = f"hypha-whisper-test-{uuid.uuid4().hex[:8]}"
+    _hc_module.SERVICE_ID = svc_id
+
     client = HyphaClient(
         server_url="https://hypha.aicell.io/",
         workspace=workspace,
@@ -42,7 +54,7 @@ async def _register_client(token, workspace, mic, engine):
     )
     await client._connect_with_backoff()
     await client._register()
-    return client
+    return client, svc_id
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +81,10 @@ async def test_health_via_hypha(mock_mic, mock_whisper):
     over the real public HTTPS URL (no TestClient, real network).
     """
     token, workspace = _creds()
-    client = await _register_client(token, workspace, mock_mic, mock_whisper)
+    client, svc_id = await _register_client(token, workspace, mock_mic, mock_whisper)
     try:
         ws = client._server.config.workspace
-        url = f"https://hypha.aicell.io/{ws}/apps/hypha-whisper/health"
+        url = f"https://hypha.aicell.io/{ws}/apps/{svc_id}/health"
         async with httpx.AsyncClient() as http:
             resp = await http.get(url, timeout=15)
         assert resp.status_code == 200
@@ -107,10 +119,10 @@ async def test_transcript_feed_via_hypha(tone_pcm):
     # second keeps the queue non-empty so the stream doesn't close immediately.
     mic = MockMicCapture([tone_pcm, tone_pcm])
 
-    client = await _register_client(token, workspace, mic, engine)
+    client, svc_id = await _register_client(token, workspace, mic, engine)
     try:
         ws = client._server.config.workspace
-        url = f"https://hypha.aicell.io/{ws}/apps/hypha-whisper/transcript_feed"
+        url = f"https://hypha.aicell.io/{ws}/apps/{svc_id}/transcript_feed"
         print(f"\n[transcript_feed] connecting → {url}")
 
         received = []
