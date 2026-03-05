@@ -1,4 +1,4 @@
-name: CI
+name: Run tests
 
 on:
   push:
@@ -38,7 +38,10 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
 
-      - name: Run unit tests (no hardware, no network, no slow)
+      - name: Run unit tests (no hardware, no slow)
         run: |
-          pytest -m "not hardware and not integration and not slow" \
+          pytest -m "not hardware and not slow" \
             --tb=short -v
+        env:
+          HYPHA_WORKSPACE_TOKEN: ${{ secrets.HYPHA_WORKSPACE_TOKEN }}
+          HYPHA_WORKSPACE: ${{ secrets.HYPHA_WORKSPACE }}
