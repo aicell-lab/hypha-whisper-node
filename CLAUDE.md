@@ -88,10 +88,23 @@ Build a portable, real-time speech-to-text edge node that:
 - [ ] Handle DNS failures gracefully — retry Hypha connection, don't crash
 
 ### Phase 7 — Testing & Polish
-- [ ] Write integration test: simulate audio file → verify Hypha transcript delivery
-- [ ] Stress test: 30-min continuous run, monitor CPU/GPU/RAM
-- [ ] Add local HDMI UI (optional) — display live transcript on screen
+
+#### 7a — pytest suite
+- [x] `pytest.ini` + `requirements-dev.txt` (pytest-asyncio, httpx, psutil)
+- [x] `tests/conftest.py` — shared fixtures: synthetic PCM, MockMicCapture, MockWhisperEngine
+- [x] `tests/test_vad.py` — VAD unit tests (silence rejected, voiced frames accepted); no hardware
+- [x] `tests/test_whisper.py` — WhisperEngine: silent-audio returns empty string; `@hardware` GPU test
+- [x] `tests/test_hypha.py` — ASGI `/transcript_feed` + `/health` with mock mic/whisper; `@integration` live Hypha test
+- [x] `tests/test_stress.py` — `@slow @hardware` 30-min run; log CPU/GPU/RAM via psutil + tegrastats
+
+#### 7b — GitHub Actions CI
+- [x] `.github/workflows/test.yml` — runs on push/PR to `main`
+  - standard `ubuntu-latest` runner: install deps (CPU-only torch), run unit tests only
+  - excludes `@hardware`, `@integration`, `@slow` markers
+
+#### 7c — Polish
 - [ ] Update README with actual benchmark numbers
+- [ ] Add local HDMI UI (optional) — display live transcript on screen
 
 ### Phase 8 — ReSpeaker Mic Array Upgrade (future)
 - [ ] Procure ReSpeaker Mic Array v2.0
@@ -112,11 +125,22 @@ hypha-whisper-node/
   transcribe/
     whisper_engine.py   # Whisper inference wrapper
   rpc/
-    hypha_client.py     # Hypha RPC service
+    hypha_client.py     # Hypha ASGI service (FastAPI SSE)
+  tests/
+    conftest.py         # shared fixtures
+    test_vad.py         # VAD unit tests
+    test_whisper.py     # Whisper unit + hardware tests
+    test_hypha.py       # ASGI endpoint + Hypha integration tests
+    test_stress.py      # 30-min stress test (slow + hardware)
+  .github/
+    workflows/
+      test.yml          # CI: unit tests on ubuntu-latest
   docs/
     hardware.md         # wiring, assembly
   setup.sh              # one-shot install
+  pytest.ini
   requirements.txt
+  requirements-dev.txt
   README.md
   CLAUDE.md             # this file
 ```

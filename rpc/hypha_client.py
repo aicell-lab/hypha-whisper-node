@@ -21,6 +21,7 @@ Usage:
 
 import asyncio
 import logging
+import queue
 import time
 
 from fastapi import FastAPI, Request
@@ -69,7 +70,7 @@ async def transcript_feed(request: Request):
                         loop.run_in_executor(None, _mic.queue.get, True, 0.5),
                         timeout=15.0,
                     )
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, queue.Empty):
                     yield ": keep-alive\n\n"
                     continue
 
