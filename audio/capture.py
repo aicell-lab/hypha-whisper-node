@@ -4,10 +4,17 @@ audio/capture.py — Continuous mic capture for HIK 1080P USB camera.
 Uses SpeechRecognition with PyAudio backend. Detects the HIK camera
 by name so it works even if the ALSA card index shifts on reboot.
 Puts raw PCM bytes into a thread-safe Queue consumed by the transcriber.
+
+VAD: webrtcvad runs on every captured chunk as a second-stage filter.
+SpeechRecognition's energy threshold gates the first stage (open/close mic).
+webrtcvad then verifies the chunk actually contains speech frames before
+enqueueing it, dropping false positives (loud bangs, clicks, fan noise).
 """
 
 import queue
 from typing import Optional
+import numpy as np
+import webrtcvad
 import speech_recognition as sr
 
 
@@ -17,6 +24,11 @@ PHRASE_TIMEOUT = 3        # seconds: silence gap that marks end of a phrase
 ENERGY_THRESHOLD = 1000   # RMS energy threshold for voice detection
 MIC_NAME = "HIK 1080P Camera"
 
+# webrtcvad settings
+VAD_AGGRESSIVENESS = 2    # 0=least aggressive, 3=most aggressive
+VAD_FRAME_MS = 20         # webrtcvad supports 10, 20, or 30 ms frames
+VAD_SPEECH_RATIO = 0.3    # minimum fraction of voiced frames to pass chunk
+
 
 def find_mic_index() -> Optional[int]:
     """Return the PyAudio device index for the HIK camera mic, or None."""
@@ -24,6 +36,24 @@ def find_mic_index() -> Optional[int]:
         if MIC_NAME in name:
             return i
     return None
+
+
+def _vad_has_speech(pcm_bytes: bytes, aggressiveness: int = VAD_AGGRESSIVENESS) -> bool:
+    """
+    Return True if at least VAD_SPEECH_RATIO of 20ms frames are voiced.
+    pcm_bytes must be S16LE at SAMPLE_RATE.
+    """
+    vad = webrtcvad.Vad(aggressiveness)
+    frame_bytes = int(SAMPLE_RATE * VAD_FRAME_MS / 1000) * 2  # 2 bytes per S16 sample
+    total = voiced = 0
+    for i in range(0, len(pcm_bytes) - frame_bytes + 1, frame_bytes):
+        frame = pcm_bytes[i:i + frame_bytes]
+        total += 1
+        if vad.is_speech(frame, SAMPLE_RATE):
+            voiced += 1
+    if total == 0:
+        return False
+    return (voiced / total) >= VAD_SPEECH_RATIO
 
 
 class MicCapture:
@@ -73,4 +103,6 @@ class MicCapture:
             self._stop_fn(wait_for_stop=False)
 
     def _callback(self, recognizer, audio: sr.AudioData):
-        self.queue.put(audio.get_raw_data())
+        pcm = audio.get_raw_data()
+        if _vad_has_speech(pcm):
+            self.queue.put(pcm)

@@ -27,7 +27,7 @@ Build a portable, real-time speech-to-text edge node that:
 ### Phase 2 — Audio Capture (HIKVISION USB mic)
 - [x] Write `audio/capture.py` — MicCapture class, SpeechRecognition + PyAudio, Queue-based
 - [x] Test HIKVISION mic device index — PyAudio index 20, hw:2,0, 16kHz mono, confirmed
-- [ ] Add VAD (Voice Activity Detection) to gate recording (use `silero-vad` or `webrtcvad`)
+- [x] Add VAD — webrtcvad 2.0.10, aggressiveness=2, 20ms frames, 30% voiced ratio threshold
 
 ### Phase 3 — Whisper Transcription
 - [ ] Benchmark Whisper model sizes on Jetson (tiny / base / small)

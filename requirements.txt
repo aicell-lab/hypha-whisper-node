@@ -10,6 +10,8 @@ openai-whisper==20250625
 SpeechRecognition==3.10.4
 numpy==1.24.4
 tiktoken==0.7.0
+webrtcvad==2.0.10
+pyyaml==6.0.3
 
 # Audio — install via conda-forge (bundles portaudio + ffmpeg):
 #   conda install -c conda-forge portaudio pyaudio ffmpeg
