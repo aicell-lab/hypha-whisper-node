@@ -16,17 +16,16 @@ Build a portable, real-time speech-to-text edge node that:
 ## Action Plan
 
 ### Phase 1 — Environment Setup
-- [x] Verify CUDA / TensorRT availability — CUDA 11.4, TensorRT 8.5.2 confirmed
-- [x] Create Conda virtual environment and install base deps(with miniconda)
-  - env: `hypha-whisper` (Python 3.8, miniconda)
-  - PyTorch 2.1.0 from NVIDIA JetPack 5.1.2 wheel (CUDA on Orin GPU confirmed)
-  - openai-whisper 20250625, SpeechRecognition 3.10.4, pyaudio, ffmpeg
-  - Run with: `LD_LIBRARY_PATH=/home/reef-orinnano/miniconda3/envs/hypha-whisper/lib:$LD_LIBRARY_PATH`
-- [x] Verify HIKVISION USB camera mic is detected — card 2 `hw:2,0`, 16kHz mono S16_LE
+- [x] Verify CUDA availability — **JetPack 6.2 (L4T R36.5), CUDA 12.6, Python 3.10.12** confirmed
+- [ ] Install Python deps for new environment (python3-pip, portaudio19-dev, ffmpeg via apt; PyTorch from NVIDIA JP6.2 wheel)
+  - PyTorch wheel: `https://developer.download.nvidia.com/compute/redist/jp/v62/pytorch/`
+  - openai-whisper, SpeechRecognition, pyaudio, webrtcvad, hypha-rpc
+  - No LD_LIBRARY_PATH workaround needed on JP6
+- [x] Verify HIKVISION USB camera mic is detected — **card 0** `hw:0,0` on new OS
 
 ### Phase 2 — Audio Capture (HIKVISION USB mic)
 - [x] Write `audio/capture.py` — MicCapture class, SpeechRecognition + PyAudio, Queue-based
-- [x] Test HIKVISION mic device index — PyAudio index 20, hw:2,0, 16kHz mono, confirmed
+- [ ] Test HIKVISION mic device index on new OS — was PyAudio index 20 hw:2,0; now card 0 hw:0,0 (re-verify PyAudio index)
 - [x] Add VAD — webrtcvad 2.0.10, aggressiveness=2, 20ms frames, 30% voiced ratio threshold
 
 ### Phase 3 — Whisper Transcription
@@ -43,29 +42,6 @@ Build a portable, real-time speech-to-text edge node that:
 - [x] Write `rpc/hypha_client.py` — HyphaClient class, protected visibility, exponential backoff reconnect
 - [x] Expose `stream_transcripts()` async generator + `health()` via Hypha RPC
 - [x] Connection to https://hypha.aicell.io/ confirmed ✅
-
-### ⚠️ PENDING: JetPack Upgrade (do this before Phase 5)
-
-**Current**: JetPack 5.1.3 (L4T R35.5) → Python 3.8 → hypha-rpc max 0.20.48
-**Target**:  JetPack 6.1 or 6.2 (L4T R36) → Python 3.10 → hypha-rpc latest + CUDA 12
-
-**Upgrade requires physical access — full OS reflash via NVIDIA SDK Manager:**
-1. Host PC: install SDK Manager (`https://developer.nvidia.com/sdk-manager`)
-2. Connect Jetson via USB-C data cable
-3. Force Recovery mode: hold `FORCE REC` → press `RESET` → release `FORCE REC`
-4. SDK Manager: select Jetson Orin Nano, JetPack 6.1 or 6.2, flash
-
-**After reflash, reinstall env:**
-```bash
-conda create -n hypha-whisper python=3.10 -y
-conda activate hypha-whisper
-conda install -c conda-forge portaudio pyaudio ffmpeg -y
-pip install https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/<wheel>.whl
-pip install -r requirements.txt   # versions will need updating for py3.10
-```
-- New PyTorch wheel URL: `https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/`
-- Remove `LD_LIBRARY_PATH` workaround — no longer needed on JP6
-- All source code (audio/, transcribe/, rpc/) carries over unchanged
 
 ---
 
