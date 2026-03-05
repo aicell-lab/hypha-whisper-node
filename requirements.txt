@@ -1,0 +1,15 @@
+# hypha-whisper-node dependencies
+# Jetson Orin Nano — JetPack 5.1.x (L4T R35), CUDA 11.4, Python 3.8
+#
+# PyTorch must be installed separately from the NVIDIA JetPack wheel:
+#   pip install https://developer.download.nvidia.com/compute/redist/jp/v512/pytorch/torch-2.1.0a0+41361538.nv23.06-cp38-cp38-linux_aarch64.whl
+#
+# Then install these:
+
+openai-whisper==20250625
+SpeechRecognition==3.10.4
+numpy==1.24.4
+tiktoken==0.7.0
+
+# Audio — install via conda-forge (bundles portaudio + ffmpeg):
+#   conda install -c conda-forge portaudio pyaudio ffmpeg
