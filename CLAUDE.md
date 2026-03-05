@@ -39,10 +39,35 @@ Build a portable, real-time speech-to-text edge node that:
 - [x] Latency target <2s — all model sizes PASS
 
 ### Phase 4 — Hypha RPC Integration
-- [ ] Install `hypha-rpc` (`pip install hypha-rpc`)
-- [ ] Write `rpc/hypha_client.py` — connect to Hypha server, register service
-- [ ] Expose `get_transcript()` and streaming callback via Hypha RPC
-- [ ] Test connection and transcript delivery from a remote client
+- [x] Install hypha-rpc 0.20.48 (already present)
+- [x] Write `rpc/hypha_client.py` — HyphaClient class, protected visibility, exponential backoff reconnect
+- [x] Expose `stream_transcripts()` async generator + `health()` via Hypha RPC
+- [x] Connection to https://hypha.aicell.io/ confirmed ✅
+
+### ⚠️ PENDING: JetPack Upgrade (do this before Phase 5)
+
+**Current**: JetPack 5.1.3 (L4T R35.5) → Python 3.8 → hypha-rpc max 0.20.48
+**Target**:  JetPack 6.1 or 6.2 (L4T R36) → Python 3.10 → hypha-rpc latest + CUDA 12
+
+**Upgrade requires physical access — full OS reflash via NVIDIA SDK Manager:**
+1. Host PC: install SDK Manager (`https://developer.nvidia.com/sdk-manager`)
+2. Connect Jetson via USB-C data cable
+3. Force Recovery mode: hold `FORCE REC` → press `RESET` → release `FORCE REC`
+4. SDK Manager: select Jetson Orin Nano, JetPack 6.1 or 6.2, flash
+
+**After reflash, reinstall env:**
+```bash
+conda create -n hypha-whisper python=3.10 -y
+conda activate hypha-whisper
+conda install -c conda-forge portaudio pyaudio ffmpeg -y
+pip install https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/<wheel>.whl
+pip install -r requirements.txt   # versions will need updating for py3.10
+```
+- New PyTorch wheel URL: `https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/`
+- Remove `LD_LIBRARY_PATH` workaround — no longer needed on JP6
+- All source code (audio/, transcribe/, rpc/) carries over unchanged
+
+---
 
 ### Phase 5 — Main Orchestration
 - [ ] Write `main.py` — wire audio capture → VAD → Whisper → Hypha RPC
