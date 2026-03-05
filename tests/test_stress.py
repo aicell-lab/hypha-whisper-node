@@ -73,7 +73,107 @@ def _parse_gpu_percent(tegrastats_line: str) -> float | None:
 
 
 # ---------------------------------------------------------------------------
-# Stress test
+# CI sustained test — no hardware, real Whisper + real Hypha
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+async def test_sustained_pipeline_ci(tone_pcm):
+    """
+    CI comprehensive stress test (~60–120 s):
+      - 15 synthetic audio chunks fed through real WhisperEngine (tiny.en)
+      - Service registered on hypha.aicell.io via hypha-rpc
+      - Client reads 15 SSE events from the live /transcript_feed URL
+      - Tracks per-event latency and CPU/RAM throughout
+
+    No physical hardware required — runs on any machine with network access
+    and HYPHA_WORKSPACE_TOKEN set.
+    """
+    import os
+    import httpx
+    from tests.conftest import MockMicCapture
+    from transcribe.whisper_engine import WhisperEngine
+    from rpc.hypha_client import HyphaClient
+
+    token = os.environ.get("HYPHA_WORKSPACE_TOKEN", "")
+    workspace = os.environ.get("HYPHA_WORKSPACE", "")
+    if not token:
+        pytest.skip("HYPHA_WORKSPACE_TOKEN not set")
+
+    N_CHUNKS = 15
+    MAX_EVENT_LATENCY_S = 10.0   # generous for CPU-only CI runners
+
+    engine = WhisperEngine(model_name="tiny.en")
+    mic = MockMicCapture([tone_pcm] * N_CHUNKS)
+
+    client = HyphaClient(
+        server_url="https://hypha.aicell.io/",
+        workspace=workspace,
+        token=token,
+        mic_capture=mic,
+        whisper_engine=engine,
+    )
+    await client._connect_with_backoff()
+    await client._register()
+
+    ws = client._server.config.workspace
+    url = f"https://hypha.aicell.io/{ws}/apps/hypha-whisper/transcript_feed"
+    print(f"\n[ci-stress] {N_CHUNKS} chunks → {url}")
+
+    events = []
+    latencies = []
+    cpu_samples = []
+    ram_samples = []
+
+    try:
+        async with httpx.AsyncClient() as http:
+            async with http.stream(
+                "GET", url,
+                timeout=httpx.Timeout(120.0, connect=15.0),
+            ) as resp:
+                assert resp.status_code == 200
+                assert "text/event-stream" in resp.headers["content-type"]
+
+                t_last = time.monotonic()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    now = time.monotonic()
+                    gap = now - t_last
+                    t_last = now
+                    latencies.append(gap)
+                    events.append(line)
+                    cpu_samples.append(psutil.cpu_percent())
+                    ram_samples.append(psutil.virtual_memory().percent)
+                    print(f"  [{len(events):2d}/{N_CHUNKS}] +{gap:.2f}s  {line[:80]!r}")
+                    assert gap < MAX_EVENT_LATENCY_S, (
+                        f"Event {len(events)} took {gap:.1f}s > {MAX_EVENT_LATENCY_S}s"
+                    )
+                    if len(events) >= N_CHUNKS:
+                        break
+    finally:
+        await asyncio.sleep(0.6)
+        await client._server.disconnect()
+
+    assert len(events) >= N_CHUNKS, f"Only {len(events)}/{N_CHUNKS} events received"
+
+    avg_lat = sum(latencies) / len(latencies)
+    avg_cpu = sum(cpu_samples) / len(cpu_samples) if cpu_samples else 0
+    avg_ram = sum(ram_samples) / len(ram_samples) if ram_samples else 0
+
+    print(f"\n--- CI stress summary ---")
+    print(f"  Events received : {len(events)}")
+    print(f"  Avg event gap   : {avg_lat:.2f}s")
+    print(f"  Max event gap   : {max(latencies):.2f}s")
+    print(f"  Avg CPU         : {avg_cpu:.1f}%")
+    print(f"  Avg RAM         : {avg_ram:.1f}%")
+
+    assert avg_lat < MAX_EVENT_LATENCY_S, (
+        f"Average event gap {avg_lat:.2f}s > {MAX_EVENT_LATENCY_S}s"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stress test — 30-min hardware run
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
