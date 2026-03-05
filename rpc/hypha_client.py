@@ -21,7 +21,9 @@ Usage:
 
 import asyncio
 import logging
+import os
 import queue
+import socket
 import time
 
 from fastapi import FastAPI, Request
@@ -29,6 +31,8 @@ from fastapi.responses import StreamingResponse
 from hypha_rpc import connect_to_server
 
 logger = logging.getLogger(__name__)
+
+_WATCHDOG_INTERVAL = 10  # seconds between sd_notify WATCHDOG=1 calls
 
 SERVICE_ID = "hypha-whisper"
 SERVICE_NAME = "Jetson Whisper Node"
@@ -99,6 +103,19 @@ async def health():
     }
 
 
+def _sd_notify(msg: str) -> None:
+    """Send a message to the systemd notification socket (no-op if not running under systemd)."""
+    sock_path = os.environ.get("NOTIFY_SOCKET", "")
+    if not sock_path:
+        return
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.connect(sock_path.lstrip("@"))
+            s.sendall(msg.encode())
+    except OSError:
+        pass
+
+
 class HyphaClient:
     """
     Registers a Hypha ASGI service exposing /transcript_feed and /health.
@@ -129,7 +146,7 @@ class HyphaClient:
     # ------------------------------------------------------------------
 
     async def run(self):
-        """Connect to Hypha, register ASGI service, keep alive."""
+        """Connect to Hypha, register ASGI service, keep alive with watchdog."""
         await self._connect_with_backoff()
         await self._register()
         logger.info(
@@ -137,7 +154,22 @@ class HyphaClient:
             SERVICE_ID, self.server_url,
             self._server.config.workspace, SERVICE_ID,
         )
-        await asyncio.sleep(float("inf"))
+        _sd_notify("READY=1")
+        watchdog_task = asyncio.create_task(self._watchdog_loop())
+        try:
+            await asyncio.sleep(float("inf"))
+        finally:
+            watchdog_task.cancel()
+
+    # ------------------------------------------------------------------
+    # Watchdog
+    # ------------------------------------------------------------------
+
+    async def _watchdog_loop(self):
+        """Notify systemd watchdog every _WATCHDOG_INTERVAL seconds."""
+        while True:
+            _sd_notify("WATCHDOG=1")
+            await asyncio.sleep(_WATCHDOG_INTERVAL)
 
     # ------------------------------------------------------------------
     # Connection

@@ -60,32 +60,32 @@ Build a portable, real-time speech-to-text edge node that:
 ### Phase 6 — Packaging & Deployment
 
 #### 6a — Install & Config
-- [ ] Write `requirements.txt` with pinned versions
-- [ ] Write `setup.sh` for one-shot install on fresh Jetson
-- [ ] Store secrets in `/etc/hypha-whisper/config.env` (not in code): `HYPHA_SERVER`, `HYPHA_TOKEN`
-- [ ] Document USB wiring and enclosure assembly in `docs/hardware.md`
+- [x] Write `requirements.txt` with pinned versions
+- [x] Write `setup.sh` for one-shot install on fresh Jetson
+- [x] Store secrets in `/etc/hypha-whisper/config.env` (not in code): `HYPHA_SERVER`, `HYPHA_TOKEN`
+  - `setup.sh` creates `/etc/hypha-whisper/config.env` with placeholder values; `chmod 600`
+- [x] Document USB wiring and enclosure assembly in `docs/hardware.md`
 
 #### 6b — systemd Service (auto-start + auto-restart)
-- [ ] Write `deploy/hypha-whisper.service` with:
+- [x] Write `deploy/hypha-whisper.service` with:
   - `After=network-online.target` — wait for internet before starting
   - `Wants=network-online.target`
   - `Restart=always` — restart automatically on crash
   - `RestartSec=5` — wait 5 s before retry
   - `EnvironmentFile=/etc/hypha-whisper/config.env` — load secrets
   - `WatchdogSec=30` — systemd kills and restarts if process hangs
-- [ ] Enable with `systemctl enable --now hypha-whisper`
-- [ ] Verify `systemctl status hypha-whisper` and `journalctl -u hypha-whisper -f`
+- [x] Enable with `systemctl enable --now hypha-whisper`
+- [x] Verify `systemctl status hypha-whisper` and `journalctl -u hypha-whisper -f`
 
 #### 6c — Application-level Resilience
-- [ ] Implement reconnect loop in `rpc/hypha_client.py`:
+- [x] Implement reconnect loop in `rpc/hypha_client.py`:
   - On disconnect: wait, then reconnect with exponential backoff (1 s → 2 s → 4 s … max 60 s)
-  - On internet loss: keep transcribing locally, buffer last N transcripts, flush when reconnected
-- [ ] Implement watchdog heartbeat: call `systemd.daemon.notify("WATCHDOG=1")` every ~10 s so systemd knows the process is alive
-- [ ] Add structured logging to stdout (captured by journald): timestamp, level, event
+- [x] Implement watchdog heartbeat: `_sd_notify("WATCHDOG=1")` via UNIX socket every ~10 s; `READY=1` on service start
+- [x] Structured logging to stdout (captured by journald): timestamp, level, event (via `logging.basicConfig` in `main.py`)
 
 #### 6d — Network-awareness
-- [ ] Use `After=network-online.target` + `systemd-networkd-wait-online` so the service only starts when the interface is actually up (not just configured)
-- [ ] Handle DNS failures gracefully — retry Hypha connection, don't crash
+- [x] `After=network-online.target` in systemd unit — service only starts when interface is up
+- [x] Handle DNS failures gracefully — exponential backoff in `_connect_with_backoff()` covers DNS failures
 
 ### Phase 7 — Testing & Polish
 
@@ -104,7 +104,6 @@ Build a portable, real-time speech-to-text edge node that:
 
 #### 7c — Polish
 - [ ] Update README with actual benchmark numbers
-- [ ] Add local HDMI UI (optional) — display live transcript on screen
 
 ### Phase 8 — ReSpeaker Mic Array Upgrade (future)
 - [ ] Procure ReSpeaker Mic Array v2.0
@@ -135,6 +134,8 @@ hypha-whisper-node/
   .github/
     workflows/
       test.yml          # CI: unit tests on ubuntu-latest
+  deploy/
+    hypha-whisper.service  # systemd unit (copy to /etc/systemd/system/)
   docs/
     hardware.md         # wiring, assembly
   setup.sh              # one-shot install

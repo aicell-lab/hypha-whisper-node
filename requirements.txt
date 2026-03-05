@@ -22,6 +22,7 @@ numpy==1.26.4
 tiktoken==0.7.0
 webrtcvad==2.0.10
 pyyaml==6.0.3
-hypha-rpc
-pyaudio
-fastapi
+hypha-rpc==0.21.31
+pyaudio==0.2.14
+fastapi==0.115.12
+uvicorn==0.34.0

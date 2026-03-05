@@ -1,0 +1,37 @@
+[Unit]
+Description=Hypha Whisper Node — real-time speech-to-text edge service
+Documentation=https://github.com/reef-imaging/hypha-whisper-node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reef-orinnano
+WorkingDirectory=/home/reef-orinnano/workspace/hypha-whisper-node
+
+# Load secrets from config file (HYPHA_SERVER, HYPHA_WORKSPACE, HYPHA_WORKSPACE_TOKEN)
+EnvironmentFile=-/etc/hypha-whisper/config.env
+
+# libcusparseLt and CUDA libs are not in the default ld path on JP6.2
+Environment="LD_LIBRARY_PATH=/home/reef-orinnano/.local/lib:/usr/local/cuda/lib64"
+
+ExecStart=/usr/bin/python3 /home/reef-orinnano/workspace/hypha-whisper-node/main.py
+
+# Auto-restart on crash
+Restart=always
+RestartSec=5
+
+# systemd watchdog — kills and restarts the process if it stops calling sd_notify
+# within this interval. The process calls WATCHDOG=1 every ~10 s.
+WatchdogSec=30
+
+# Give the Whisper model time to load on startup before the watchdog fires
+TimeoutStartSec=120
+
+# Clean stdout/stderr logs via journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hypha-whisper
+
+[Install]
+WantedBy=multi-user.target
