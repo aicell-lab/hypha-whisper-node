@@ -43,6 +43,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
+for _lib in ("hypha_rpc", "websockets", "asyncio", "urllib3", "httpx"):
+    logging.getLogger(_lib).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

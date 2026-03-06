@@ -75,12 +75,11 @@ async def transcript_feed(request: Request):
                         timeout=15.0,
                     )
                 except (asyncio.TimeoutError, queue.Empty):
-                    yield ": keep-alive\n\n"
                     continue
 
                 text = await loop.run_in_executor(None, _whisper.transcribe, pcm)
                 if text:
-                    logger.debug("[transcript_feed] %s", text)
+                    logger.info("[transcript] %s", text)
                     yield f"data: {text}\n\n"
         finally:
             # Drain stale audio so the next connection starts clean.
@@ -146,20 +145,45 @@ class HyphaClient:
     # ------------------------------------------------------------------
 
     async def run(self):
-        """Connect to Hypha, register ASGI service, keep alive with watchdog."""
-        await self._connect_with_backoff()
-        await self._register()
-        logger.info(
-            "[hypha] ASGI service '%s' registered. Try: %s/%s/apps/%s/transcript_feed",
-            SERVICE_ID, self.server_url,
-            self._server.config.workspace, SERVICE_ID,
-        )
-        _sd_notify("READY=1")
-        watchdog_task = asyncio.create_task(self._watchdog_loop())
-        try:
-            await asyncio.sleep(float("inf"))
-        finally:
-            watchdog_task.cancel()
+        """Connect to Hypha, register ASGI service; reconnect on disconnect."""
+        first = True
+        while True:
+            await self._connect_with_backoff()
+            await self._register()
+            logger.info(
+                "[hypha] ASGI service '%s' registered. Try: %s/%s/apps/%s/transcript_feed",
+                SERVICE_ID, self.server_url,
+                self._server.config.workspace, SERVICE_ID,
+            )
+            if first:
+                _sd_notify("READY=1")
+                first = False
+            watchdog_task = asyncio.create_task(self._watchdog_loop())
+            try:
+                await self._keepalive()
+            except asyncio.CancelledError:
+                watchdog_task.cancel()
+                raise
+            finally:
+                watchdog_task.cancel()
+            logger.warning("[hypha] Connection lost — reconnecting in 5 s…")
+            await asyncio.sleep(5)
+
+    # ------------------------------------------------------------------
+    # Keepalive / disconnect detection
+    # ------------------------------------------------------------------
+
+    async def _keepalive(self):
+        """Block until the Hypha connection drops, then return."""
+        while True:
+            await asyncio.sleep(15)
+            try:
+                await asyncio.wait_for(self._server.list_services(), timeout=10.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[hypha] Keepalive ping failed (%s) — reconnecting", exc)
+                return
 
     # ------------------------------------------------------------------
     # Watchdog
