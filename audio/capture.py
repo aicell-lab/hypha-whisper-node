@@ -28,15 +28,31 @@ except OSError:
 
 
 SAMPLE_RATE = 16000       # Hz — native rate of HIK mic, required by Whisper
-RECORD_TIMEOUT = 2        # seconds: max duration of a single recording chunk
+RECORD_TIMEOUT = 3        # seconds: max duration of a single recording chunk
 PHRASE_TIMEOUT = 3        # seconds: silence gap that marks end of a phrase
 ENERGY_THRESHOLD = 1000   # RMS energy threshold for voice detection
 MIC_NAME = "HIK 1080P Camera"
 
 # webrtcvad settings
-VAD_AGGRESSIVENESS = 2    # 0=least aggressive, 3=most aggressive
+VAD_AGGRESSIVENESS = 3    # 0=least aggressive, 3=most aggressive (was 2)
 VAD_FRAME_MS = 20         # webrtcvad supports 10, 20, or 30 ms frames
-VAD_SPEECH_RATIO = 0.3    # minimum fraction of voiced frames to pass chunk
+VAD_SPEECH_RATIO = 0.5    # minimum fraction of voiced frames to pass chunk (was 0.3)
+
+
+def _bandpass_filter(audio: np.ndarray, low_hz: int = 300, high_hz: int = 3400) -> np.ndarray:
+    """Zero out frequencies outside the speech band via FFT (no scipy needed)."""
+    fft = np.fft.rfft(audio)
+    freqs = np.fft.rfftfreq(len(audio), d=1.0 / SAMPLE_RATE)
+    fft[(freqs < low_hz) | (freqs > high_hz)] = 0
+    return np.fft.irfft(fft, n=len(audio))
+
+
+def _normalize_rms(audio: np.ndarray, target_rms: float = 0.05) -> np.ndarray:
+    """Scale audio to a fixed RMS level so quiet speech is not drowned by noise."""
+    rms = np.sqrt(np.mean(audio ** 2))
+    if rms < 1e-6:
+        return audio
+    return audio * (target_rms / rms)
 
 
 def find_mic_index() -> Optional[int]:
@@ -113,5 +129,11 @@ class MicCapture:
 
     def _callback(self, recognizer, audio: sr.AudioData):
         pcm = audio.get_raw_data()
-        if _vad_has_speech(pcm):
-            self.queue.put(pcm)
+        if not _vad_has_speech(pcm):   # VAD runs on raw S16LE (webrtcvad requirement)
+            return
+        # Bandpass filter + RMS normalization before Whisper sees the audio
+        audio_f32 = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        audio_f32 = _bandpass_filter(audio_f32)
+        audio_f32 = _normalize_rms(audio_f32)
+        processed = (audio_f32 * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+        self.queue.put(processed)
