@@ -27,7 +27,7 @@ import socket
 import time
 
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from hypha_rpc import connect_to_server
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,119 @@ _whisper = None
 _start_time: float = 0.0
 
 app = FastAPI()
+
+
+@app.get("/", response_class=HTMLResponse)
+async def live_transcript_page():
+    """Human-readable live transcript viewer."""
+    return HTMLResponse("""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hypha Whisper — Live Transcript</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 20px;
+      gap: 12px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    h1 { font-size: 1.1rem; font-weight: 600; color: #222; }
+    #status {
+      font-size: 0.8rem;
+      padding: 3px 10px;
+      border-radius: 99px;
+      background: #e0e0e0;
+      color: #555;
+    }
+    #status.connected { background: #d4edda; color: #155724; }
+    #status.error     { background: #f8d7da; color: #721c24; }
+    #transcript-box {
+      flex: 1;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      overflow-y: auto;
+      font-size: 1.05rem;
+      line-height: 1.75;
+      color: #222;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #transcript-box:empty::before {
+      content: "Waiting for speech…";
+      color: #aaa;
+      font-style: italic;
+    }
+    footer {
+      display: flex;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+    button {
+      padding: 7px 18px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: #444;
+    }
+    button:hover { background: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hypha Whisper &mdash; Live Transcript</h1>
+    <span id="status">Connecting…</span>
+  </header>
+  <div id="transcript-box"></div>
+  <footer>
+    <button onclick="document.getElementById('transcript-box').textContent=''">Clear</button>
+  </footer>
+  <script>
+    const box    = document.getElementById('transcript-box');
+    const status = document.getElementById('status');
+
+    function connect() {
+      const src = new EventSource('transcript_feed');
+
+      src.onopen = () => {
+        status.textContent = '● Connected';
+        status.className = 'connected';
+      };
+
+      src.onmessage = (e) => {
+        const text = e.data.trim();
+        if (!text) return;
+        box.textContent += (box.textContent ? ' ' : '') + text;
+        box.scrollTop = box.scrollHeight;
+      };
+
+      src.onerror = () => {
+        status.textContent = 'Disconnected — retrying…';
+        status.className = 'error';
+        src.close();
+        setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>""")
 
 
 @app.get("/transcript_feed")
