@@ -103,7 +103,16 @@ Build a portable, real-time speech-to-text edge node that:
   - excludes `@hardware`, `@integration`, `@slow` markers
 
 #### 7c — Polish
-- [ ] Update README with actual benchmark numbers
+- [x] Update README with actual benchmark numbers and hardware
+- [x] Improve transcription quality and noise rejection:
+  - `condition_on_previous_text=False` — stops hallucination cascades
+  - `no_speech_threshold`, `logprob_threshold`, `compression_ratio_threshold` — explicit quality gates
+  - Hallucination post-processing regex (`_clean()`) — strips `[BLANK_AUDIO]`, repetitive filler
+  - VAD aggressiveness 2→3, speech ratio 0.3→0.5 — tighter noise rejection
+  - Bandpass filter 300–3400 Hz + RMS normalisation in audio pipeline
+  - Default model `base.en` → `small.en` (0.92 s on Jetson, much better accuracy)
+- [x] Add `GET /` live transcript viewer (HTML + SSE `EventSource`, browser-ready)
+- [x] Fix health endpoint returning `"model":"unknown"` — added `self.model_name` to `WhisperEngine`
 
 ### Phase 8 — ReSpeaker Mic Array Upgrade (future)
 - [ ] Procure ReSpeaker Mic Array v2.0
@@ -151,7 +160,7 @@ hypha-whisper-node/
 ## Notes
 
 - Target latency: < 2 s per utterance
-- Whisper model default: `base.en` (adjust based on Jetson benchmarks)
+- Whisper model default: `small.en` (0.92 s on Jetson; use `--model base.en` for lower latency)
 - Hypha server: configurable via CLI; supports offline mode (transcribe only, no streaming)
 - Current mic: HIKVISION USB camera built-in mic (mono, 16 kHz)
 - Future mic: ReSpeaker Mic Array v2.0 (see Phase 8)

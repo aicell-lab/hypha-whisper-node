@@ -1,7 +1,7 @@
 # hypha-whisper-node
 
 Portable real-time speech-to-text node powered by Whisper and Jetson Orin Nano.
-Captures speech via ReSpeaker mic array, transcribes on-device, and streams results through [Hypha RPC](https://pypi.org/project/hypha-rpc/).
+Captures speech via HIKVISION USB camera mic, transcribes on-device, and streams results through [Hypha RPC](https://pypi.org/project/hypha-rpc/).
 
 ---
 
@@ -9,12 +9,12 @@ Captures speech via ReSpeaker mic array, transcribes on-device, and streams resu
 
 | Component | Details |
 |---|---|
-| Compute | Jetson Orin Nano |
-| Microphone | ReSpeaker Mic Array v2.0 (USB) |
+| Compute | Jetson Orin Nano (JetPack 6.2, CUDA 12.6) |
+| Microphone | HIKVISION USB camera built-in mic (16 kHz mono) |
 | Power | USB-C PD power bank |
 | Enclosure | 3D printed shell (ventilation + antenna ports) |
 
-**Device stack:** ReSpeaker (top) → Jetson Orin Nano (bottom) inside 3D printed shell.
+**Device stack:** HIKVISION USB camera → Jetson Orin Nano inside 3D printed shell.
 
 ---
 
@@ -22,8 +22,10 @@ Captures speech via ReSpeaker mic array, transcribes on-device, and streams resu
 
 - On-device Whisper transcription (GPU, works offline)
 - Real-time transcript streaming via Hypha ASGI service (SSE)
-- Voice Activity Detection (webrtcvad) — silence is ignored
-- Auto-reconnect to Hypha on network loss
+- Live transcript viewer — browser-based HTML page at `/`
+- Two-stage noise rejection: webrtcvad VAD + bandpass filter (300–3400 Hz) + RMS normalisation
+- Hallucination suppression: `condition_on_previous_text=False` + post-processing regex
+- Auto-reconnect to Hypha on network loss (exponential backoff)
 - systemd service with watchdog and auto-restart
 
 ---
@@ -33,8 +35,10 @@ Captures speech via ReSpeaker mic array, transcribes on-device, and streams resu
 | Model | Avg latency | Load time |
 |-------|------------|-----------|
 | tiny.en | 0.19 s | 6 s |
-| **base.en** (default) | **0.40 s** | 4 s |
-| small.en | 0.92 s | 26 s |
+| base.en | 0.40 s | 4 s |
+| **small.en** (default) | **0.92 s** | 26 s |
+
+`small.en` is the default — it offers significantly better accuracy for natural speech with acceptable latency. Use `--model base.en` if lower latency is required.
 
 ---
 
@@ -97,17 +101,35 @@ If the Hypha server drops, the service reconnects automatically (exponential bac
 
 ## Endpoints
 
-Once running, the service exposes two endpoints via Hypha:
+Once running, the service exposes three endpoints via Hypha:
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /` | Live transcript viewer — open in any browser |
 | `GET /transcript_feed` | SSE stream — one `data: <text>` event per utterance |
-| `GET /health` | JSON: `{"status":"ok","model":"base.en","uptime_seconds":123}` |
+| `GET /health` | JSON: `{"status":"ok","model":"small.en","uptime_seconds":123}` |
 
 Full URL pattern:
 ```
+https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/
 https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/transcript_feed
 https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/health
+```
+
+### Live transcript viewer
+
+Open `https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/` in a browser. The page connects automatically to `transcript_feed` via `EventSource`, accumulates text, and auto-scrolls. A **Clear** button resets the display. The connection indicator shows green when live and retries automatically on disconnect.
+
+### Consuming the SSE stream programmatically
+
+```python
+import httpx
+
+url = "https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed"
+with httpx.stream("GET", url) as r:
+    for line in r.iter_lines():
+        if line.startswith("data: "):
+            print(line[6:])
 ```
 
 ---
@@ -119,7 +141,7 @@ python3 main.py \
   --server https://hypha.aicell.io/ \
   --workspace my-workspace \
   --token my-token \
-  --model base.en
+  --model small.en
 ```
 
 Offline mode (transcribe to stdout, no Hypha):
