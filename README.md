@@ -172,7 +172,14 @@ pytest tests/ -m "not hardware and not integration and not slow"
 
 ### Hardware loopback tests (ReSpeaker + Dell AC511 required)
 
-Plays the Dark Knight Rises Bane monologue through the speaker, records via ReSpeaker, transcribes, and measures Word Error Rate.
+Generates a TTS reference clip (via gTTS — natural Google-quality voice), plays it through the Dell AC511 speaker, records via ReSpeaker, transcribes, and measures Word Error Rate. The audio file is generated once and cached in `tests/fixtures/reference.wav`.
+
+**Prerequisites:**
+
+```bash
+pip install gtts                          # natural TTS (requires internet on first run)
+sudo apt-get install -y espeak-ng         # fallback TTS if gTTS unavailable
+```
 
 ```bash
 # One-time: allow passwordless sudo for service management
@@ -191,7 +198,7 @@ echo "reef-orinnano ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin
 |------|---------------|
 | `test_speaker_playback_only` | Dell AC511 plays without error |
 | `test_mic_capture_rms` | ReSpeaker picks up speaker audio (RMS > 0.001) |
-| `test_acoustic_loopback_wer` | Full pipeline WER < 35% against reference transcript |
+| `test_acoustic_loopback_wer` | Full pipeline WER < 40% against gTTS reference transcript |
 
 ---
 

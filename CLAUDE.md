@@ -126,8 +126,10 @@ Build a portable, real-time speech-to-text edge node that:
 - [x] `tests/test_hardware_loopback.py` — play audio through Dell AC511 → record via ReSpeaker → WER check
   - `test_speaker_playback_only` — smoke test speaker
   - `test_mic_capture_rms` — verify ReSpeaker picks up audio (RMS threshold)
-  - `test_acoustic_loopback_wer` — full pipeline WER < 35% vs Bane monologue reference
-- [x] `scripts/run_hardware_tests.sh` — wrapper script: download audio, stop/restore service, check hardware, run pytest
+  - `test_acoustic_loopback_wer` — full pipeline WER < 40% vs gTTS reference transcript
+- [x] TTS audio: generated via gTTS (Google TTS, natural voice) on first run; cached as `tests/fixtures/reference.wav`; falls back to espeak-ng if gTTS unavailable
+  - Install: `pip install gtts` (internet required on first run); fallback: `sudo apt-get install -y espeak-ng`
+- [x] `scripts/run_hardware_tests.sh` — wrapper script: generate audio if missing, stop/restore service, check hardware, run pytest
 - [x] `suspend_service` pytest fixture — auto stop/restart hypha-whisper around hardware tests
   - Passwordless sudo: `echo "USER ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" | sudo tee /etc/sudoers.d/hypha-whisper-tests`
 
@@ -153,7 +155,7 @@ hypha-whisper-node/
     test_stress.py               # 30-min stress test (slow + hardware)
     test_hardware_loopback.py    # acoustic loopback + WER tests
     fixtures/
-      darkness.mp3               # test audio (gitignored, auto-downloaded)
+      reference.wav              # gTTS reference audio (gitignored, auto-generated)
   scripts/
     run_hardware_tests.sh        # hardware test runner with service management
   .github/
