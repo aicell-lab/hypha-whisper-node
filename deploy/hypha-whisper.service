@@ -15,7 +15,7 @@ EnvironmentFile=-/etc/hypha-whisper/config.env
 # libcusparseLt and CUDA libs are not in the default ld path on JP6.2
 Environment="LD_LIBRARY_PATH=/home/reef-orinnano/.local/lib:/usr/local/cuda/lib64"
 
-ExecStart=/usr/bin/python3 /home/reef-orinnano/workspace/hypha-whisper-node/main.py
+ExecStart=/usr/bin/python3 /home/reef-orinnano/workspace/hypha-whisper-node/main.py --backend whisper-timestamped
 
 # Auto-restart on crash
 Restart=always
@@ -23,10 +23,11 @@ RestartSec=5
 
 # systemd watchdog — kills and restarts the process if it stops calling sd_notify
 # within this interval. The process calls WATCHDOG=1 every ~10 s.
-WatchdogSec=30
+# 3-minute window allows the Whisper model to load before the watchdog fires.
+WatchdogSec=180
 
 # Give the Whisper model time to load on startup before the watchdog fires
-TimeoutStartSec=120
+TimeoutStartSec=300
 
 # Clean stdout/stderr logs via journald
 StandardOutput=journal

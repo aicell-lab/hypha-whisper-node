@@ -32,7 +32,7 @@ def _creds():
     return token, workspace
 
 
-async def _register_client(token, workspace, mic, engine):
+async def _register_client(token, workspace, engine):
     """
     Connect to Hypha and register the ASGI service with a unique service ID
     so back-to-back test registrations never collide on the server.
@@ -49,8 +49,7 @@ async def _register_client(token, workspace, mic, engine):
         server_url="https://hypha.aicell.io/",
         workspace=workspace,
         token=token,
-        mic_capture=mic,
-        whisper_engine=engine,
+        streaming_engine=engine,
     )
     await client._connect_with_backoff()
     await client._register()
@@ -75,13 +74,13 @@ async def test_hypha_connection():
 
 
 @pytest.mark.integration
-async def test_health_via_hypha(mock_mic, mock_whisper):
+async def test_health_via_hypha(mock_engine):
     """
     Register the ASGI service on Hypha; confirm GET /health responds
     over the real public HTTPS URL (no TestClient, real network).
     """
     token, workspace = _creds()
-    client, svc_id = await _register_client(token, workspace, mock_mic, mock_whisper)
+    client, svc_id = await _register_client(token, workspace, mock_engine)
     try:
         ws = client._server.config.workspace
         url = f"https://hypha.aicell.io/{ws}/apps/{svc_id}/health"
@@ -97,29 +96,16 @@ async def test_health_via_hypha(mock_mic, mock_whisper):
 
 
 @pytest.mark.integration
-async def test_transcript_feed_via_hypha(tone_pcm):
+async def test_transcript_feed_via_hypha(mock_engine):
     """
-    Full end-to-end test:
-      1. Start real WhisperEngine (tiny.en).
-      2. Pre-load synthetic audio into the mic queue.
-      3. Register service on hypha.aicell.io via hypha-rpc.
-      4. Connect to /transcript_feed over HTTPS and read SSE events.
-      5. Assert at least one SSE event (data: or keep-alive) is received.
-
-    This is proof that the entire pipeline works: mic → Whisper → Hypha → client.
+    Full end-to-end SSE test:
+      1. Register ASGI service on hypha.aicell.io.
+      2. Connect to /transcript_feed over HTTPS.
+      3. MockStreamingEngine.init_session() pre-loads a transcript into text_queue.
+      4. Assert at least one SSE data event is received.
     """
     token, workspace = _creds()
-
-    from tests.conftest import MockMicCapture
-    from transcribe.whisper_engine import WhisperEngine
-
-    # Real Whisper inference — tiny.en is fast enough for CI
-    engine = WhisperEngine(model_name="tiny.en")
-    # Two chunks: first produces a transcript (possibly empty for a pure tone),
-    # second keeps the queue non-empty so the stream doesn't close immediately.
-    mic = MockMicCapture([tone_pcm, tone_pcm])
-
-    client, svc_id = await _register_client(token, workspace, mic, engine)
+    client, svc_id = await _register_client(token, workspace, mock_engine)
     try:
         ws = client._server.config.workspace
         url = f"https://hypha.aicell.io/{ws}/apps/{svc_id}/transcript_feed"
@@ -140,9 +126,8 @@ async def test_transcript_feed_via_hypha(tone_pcm):
                         break  # one event is enough — disconnect
 
         assert len(received) >= 1, "No SSE events received from /transcript_feed"
+        assert any(line.startswith("data:") for line in received), \
+            "Expected a data: SSE event"
     finally:
-        # Brief pause so the server-side SSE generator finishes its current
-        # executor call before we close the RPC connection (avoids noisy
-        # "ConnectionError: RPC connection closed" log from hypha_rpc).
         await asyncio.sleep(0.6)
         await client._server.disconnect()

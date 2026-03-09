@@ -36,9 +36,9 @@ Captures speech via HIKVISION USB camera mic, transcribes on-device, and streams
 |-------|------------|-----------|
 | tiny.en | 0.19 s | 6 s |
 | base.en | 0.40 s | 4 s |
-| **small.en** (default) | **0.92 s** | 26 s |
+| **tiny.en** (default) | **0.92 s** | 26 s |
 
-`small.en` is the default — it offers significantly better accuracy for natural speech with acceptable latency. Use `--model base.en` if lower latency is required.
+`tiny.en` is the default — it offers significantly better accuracy for natural speech with acceptable latency. Use `--model tiny.en` if lower latency is required.
 
 ---
 
@@ -107,7 +107,7 @@ Once running, the service exposes three endpoints via Hypha:
 |----------|-------------|
 | `GET /` | Live transcript viewer — open in any browser |
 | `GET /transcript_feed` | SSE stream — one `data: <text>` event per utterance |
-| `GET /health` | JSON: `{"status":"ok","model":"small.en","uptime_seconds":123}` |
+| `GET /health` | JSON: `{"status":"ok","model":"tiny.en","uptime_seconds":123}` |
 
 Full URL pattern:
 ```
@@ -141,7 +141,7 @@ python3 main.py \
   --server https://hypha.aicell.io/ \
   --workspace my-workspace \
   --token my-token \
-  --model small.en
+  --model tiny.en
 ```
 
 Offline mode (transcribe to stdout, no Hypha):

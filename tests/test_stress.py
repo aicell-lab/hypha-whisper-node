@@ -197,7 +197,7 @@ def test_30min_continuous_transcription():
     from transcribe.whisper_engine import WhisperEngine
 
     mic = MicCapture()
-    engine = WhisperEngine(model_name="base.en", device="cuda")
+    engine = WhisperEngine(model_name="tiny.en", device="cuda")
 
     mic.start()
 

@@ -17,10 +17,11 @@
 #   pip install -r requirements.txt
 
 openai-whisper==20250625
-SpeechRecognition==3.10.4
-numpy==1.26.4
+faster-whisper>=1.0.3           # default ASR backend; uses CTranslate2 (no scipy dependency)
+whisper-timestamped>=1.15.4     # alternative backend (--backend whisper-timestamped)
+numpy==1.26.4                   # pinned: whisper-timestamped upgrades to 2.x which breaks PyTorch + scipy
 tiktoken==0.7.0
-webrtcvad==2.0.10
+librosa>=0.10.0                 # required by whisper_online.py
 pyyaml==6.0.3
 hypha-rpc==0.21.31
 pyaudio==0.2.14

@@ -1,10 +1,12 @@
 """
 main.py — Hypha Whisper Node entry point.
 
-Wires: MicCapture (VAD) → WhisperEngine (GPU) → HyphaClient (ASGI stream)
+Wires: MicCapture (raw PyAudio) → audio_loop → StreamingEngine (whisper_streaming)
+       → text_queue → HyphaClient (ASGI SSE)
 
 Usage:
-    python main.py [--server URL] [--workspace WS] [--token TOKEN] [--model MODEL]
+    python main.py [--server URL] [--workspace WS] [--token TOKEN]
+                   [--model MODEL] [--backend BACKEND]
 
 Environment variables (.env file or shell, in priority order):
     HYPHA_SERVER           — Hypha server URL (default: https://hypha.aicell.io/)
@@ -18,6 +20,7 @@ import argparse
 import asyncio
 import logging
 import os
+import queue
 import signal
 import sys
 
@@ -61,33 +64,59 @@ def parse_args():
                    help="Workspace token (default: $HYPHA_WORKSPACE_TOKEN)")
     p.add_argument("--model", default="base.en",
                    help="Whisper model name (default: base.en)")
+    p.add_argument("--backend", default="faster-whisper",
+                   choices=["whisper-timestamped", "faster-whisper"],
+                   help="ASR backend (default: faster-whisper)")
     p.add_argument("--device", default="",
                    help="PyTorch device: cuda or cpu (default: auto)")
     return p.parse_args()
 
 
-async def run_offline(mic, whisper_engine):
-    """Offline mode: transcribe locally and print to stdout."""
-    logger.info("[offline] Transcribing — press Ctrl+C to stop")
+async def audio_loop(mic, engine, shutdown: asyncio.Event):
+    """Continuously feed raw audio chunks from the mic into the streaming engine.
+
+    Runs as an independent asyncio Task. The engine's process_audio() is
+    blocking (runs Whisper inference), so it executes in a thread executor.
+    Committed text is placed into engine.text_queue by process_audio().
+    """
     loop = asyncio.get_event_loop()
-    while True:
+    logger.info("[audio_loop] Started")
+    while not shutdown.is_set():
         try:
-            pcm = await asyncio.wait_for(
-                loop.run_in_executor(None, mic.queue.get, True, 0.5),
+            chunk = await asyncio.wait_for(
+                loop.run_in_executor(None, mic.raw_audio_queue.get, True, 0.1),
+                timeout=0.5,
+            )
+        except (asyncio.TimeoutError, queue.Empty):
+            continue
+        try:
+            await loop.run_in_executor(None, engine.process_audio, chunk)
+        except Exception as exc:
+            logger.warning("[audio_loop] process_audio error: %s", exc)
+
+
+async def run_offline(engine, shutdown: asyncio.Event):
+    """Offline mode: print committed transcripts to stdout."""
+    loop = asyncio.get_event_loop()
+    logger.info("[offline] Transcribing — press Ctrl+C to stop")
+    # Prime the session immediately in offline mode.
+    engine.init_session()
+    while not shutdown.is_set():
+        try:
+            text = await asyncio.wait_for(
+                loop.run_in_executor(None, engine.text_queue.get, True, 0.5),
                 timeout=1.0,
             )
-        except asyncio.TimeoutError:
-            continue
-        text = await loop.run_in_executor(None, whisper_engine.transcribe, pcm)
-        if text:
             print(f"[transcript] {text}", flush=True)
+        except (asyncio.TimeoutError, queue.Empty):
+            continue
 
 
 async def main():
     args = parse_args()
 
     # ------------------------------------------------------------------
-    # Phase 2: audio capture
+    # Audio capture
     # ------------------------------------------------------------------
     logger.info("[main] Initialising microphone capture...")
     from audio.capture import MicCapture
@@ -98,13 +127,14 @@ async def main():
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Phase 3: Whisper engine
+    # Streaming engine (loads Whisper model)
     # ------------------------------------------------------------------
-    logger.info("[main] Loading Whisper model '%s'...", args.model)
-    from transcribe.whisper_engine import WhisperEngine
-    import torch
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    whisper_engine = WhisperEngine(model_name=args.model)
+    logger.info("[main] Loading Whisper model '%s' (backend=%s)...", args.model, args.backend)
+    from transcribe.streaming_engine import StreamingEngine
+    engine = StreamingEngine(
+        model_name=args.model,
+        backend=args.backend,
+    )
 
     # ------------------------------------------------------------------
     # Graceful shutdown
@@ -120,14 +150,16 @@ async def main():
     loop.add_signal_handler(signal.SIGTERM, _sigint_handler)
 
     # ------------------------------------------------------------------
-    # Start mic capture
+    # Start mic capture + audio processing loop
     # ------------------------------------------------------------------
-    logger.info("[main] Starting mic capture (ambient noise calibration)...")
+    logger.info("[main] Starting mic capture...")
     mic.start()
     logger.info("[main] Mic capture running")
 
+    audio_task = loop.create_task(audio_loop(mic, engine, shutdown))
+
     # ------------------------------------------------------------------
-    # Phase 4: Hypha RPC or offline mode
+    # Hypha RPC or offline mode
     # ------------------------------------------------------------------
     if args.server:
         from rpc.hypha_client import HyphaClient
@@ -135,15 +167,14 @@ async def main():
             server_url=args.server,
             workspace=args.workspace,
             token=args.token,
-            mic_capture=mic,
-            whisper_engine=whisper_engine,
+            streaming_engine=engine,
         )
-        logger.info("[main] Connecting to Hypha at %s (workspace: %s)…",
+        logger.info("[main] Connecting to Hypha at %s (workspace: %s)...",
                     args.server, args.workspace or "<default>")
         rpc_task = loop.create_task(client.run())
     else:
         logger.info("[main] No server configured — running in offline mode")
-        rpc_task = loop.create_task(run_offline(mic, whisper_engine))
+        rpc_task = loop.create_task(run_offline(engine, shutdown))
 
     # Wait until shutdown signal
     await shutdown.wait()
@@ -153,11 +184,15 @@ async def main():
     # ------------------------------------------------------------------
     logger.info("[main] Stopping...")
     rpc_task.cancel()
+    audio_task.cancel()
+    await asyncio.gather(rpc_task, audio_task, return_exceptions=True)
+
+    # Flush any remaining audio context from the streaming engine.
+    final = await loop.run_in_executor(None, engine.finish_session)
+    if final:
+        logger.info("[main] Final transcript: %s", final)
+
     mic.stop()
-    try:
-        await rpc_task
-    except asyncio.CancelledError:
-        pass
     logger.info("[main] Done")
 
 

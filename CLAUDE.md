@@ -110,7 +110,7 @@ Build a portable, real-time speech-to-text edge node that:
   - Hallucination post-processing regex (`_clean()`) — strips `[BLANK_AUDIO]`, repetitive filler
   - VAD aggressiveness 2→3, speech ratio 0.3→0.5 — tighter noise rejection
   - Bandpass filter 300–3400 Hz + RMS normalisation in audio pipeline
-  - Default model `base.en` → `small.en` (0.92 s on Jetson, much better accuracy)
+  - Default model `tiny.en`
 - [x] Add `GET /` live transcript viewer (HTML + SSE `EventSource`, browser-ready)
 - [x] Fix health endpoint returning `"model":"unknown"` — added `self.model_name` to `WhisperEngine`
 
@@ -160,7 +160,7 @@ hypha-whisper-node/
 ## Notes
 
 - Target latency: < 2 s per utterance
-- Whisper model default: `small.en` (0.92 s on Jetson; use `--model base.en` for lower latency)
+- Whisper model default: `base.en` (0.92 s on Jetson; use `--model tiny.en` for lower latency)
 - Hypha server: configurable via CLI; supports offline mode (transcribe only, no streaming)
 - Current mic: HIKVISION USB camera built-in mic (mono, 16 kHz)
 - Future mic: ReSpeaker Mic Array v2.0 (see Phase 8)
