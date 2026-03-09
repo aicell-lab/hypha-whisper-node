@@ -35,8 +35,8 @@ Captures speech via HIKVISION USB camera mic, transcribes on-device, and streams
 | Model | Avg latency | Load time |
 |-------|------------|-----------|
 | tiny.en | 0.19 s | 6 s |
-| base.en | 0.40 s | 4 s |
-| **base.en** (default) | **0.92 s** | 26 s |
+| **base.en** (default) | **0.40 s** | 4 s |
+| small.en | 0.92 s | 26 s |
 
 `base.en` is the default — it offers significantly better accuracy for natural speech with acceptable latency. Use `--model base.en` if lower latency is required.
 

@@ -194,10 +194,11 @@ def test_30min_continuous_transcription():
     - No unhandled exceptions
     """
     from audio.capture import MicCapture
-    from transcribe.whisper_engine import WhisperEngine
+    from transcribe.streaming_engine import StreamingEngine
 
     mic = MicCapture()
-    engine = WhisperEngine(model_name="base.en", device="cuda")
+    engine = StreamingEngine(model_name="base.en", backend="whisper-timestamped")
+    engine.init_session()
 
     mic.start()
 
@@ -234,12 +235,15 @@ def test_30min_continuous_transcription():
             )
 
             # Drain any available audio chunks (non-blocking)
-            while not mic.queue.empty():
-                pcm = mic.queue.get_nowait()
+            while not mic.raw_audio_queue.empty():
+                chunk = mic.raw_audio_queue.get_nowait()
                 t0 = time.monotonic()
-                text = engine.transcribe(pcm)
+                engine.process_audio(chunk)
                 latency = time.monotonic() - t0
                 latencies.append(latency)
+            # Drain committed transcripts
+            while not engine.text_queue.empty():
+                text = engine.text_queue.get_nowait()
                 if text:
                     transcripts.append(text)
 
