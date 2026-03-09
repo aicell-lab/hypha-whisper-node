@@ -69,6 +69,8 @@ def parse_args():
                    help="ASR backend (default: faster-whisper)")
     p.add_argument("--device", default="",
                    help="PyTorch device: cuda or cpu (default: auto)")
+    p.add_argument("--mic", default="",
+                   help="Preferred mic name substring (default: auto-detect ReSpeaker then HIK)")
     return p.parse_args()
 
 
@@ -121,7 +123,7 @@ async def main():
     logger.info("[main] Initialising microphone capture...")
     from audio.capture import MicCapture
     try:
-        mic = MicCapture()
+        mic = MicCapture(preferred_mic=args.mic or None)
     except RuntimeError as e:
         logger.error("[main] %s", e)
         sys.exit(1)

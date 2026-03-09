@@ -114,12 +114,12 @@ Build a portable, real-time speech-to-text edge node that:
 - [x] Add `GET /` live transcript viewer (HTML + SSE `EventSource`, browser-ready)
 - [x] Fix health endpoint returning `"model":"unknown"` — added `self.model_name` to `WhisperEngine`
 
-### Phase 8 — ReSpeaker Mic Array Upgrade (future)
-- [ ] Procure ReSpeaker Mic Array v2.0
-- [ ] Install ReSpeaker USB driver
+### Phase 8 — ReSpeaker Mic Array Upgrade
+- [x] Procure ReSpeaker Mic Array v2.0
+- [x] Install ReSpeaker USB driver — UAC1.0 class-compliant, no custom driver needed on Linux
 - [ ] Test beamforming / noise suppression vs. HIKVISION baseline
-- [ ] Tune channel selection and sample rate (16 kHz mono, beamformed output)
-- [ ] Update `audio/capture.py` with ReSpeaker device support (switchable via CLI flag)
+- [x] Tune channel selection and sample rate — 16 kHz native, ch0 = beamformed output
+- [x] Update `audio/capture.py` with ReSpeaker device support (auto-detect; switchable via `--mic` CLI flag)
 
 ---
 
