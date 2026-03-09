@@ -1,0 +1,23 @@
+[Unit]
+Description=Hypha Whisper Node — health watchdog
+Documentation=https://github.com/reef-imaging/hypha-whisper-node
+After=network-online.target hypha-whisper.service
+Wants=network-online.target hypha-whisper.service
+
+[Service]
+Type=simple
+User=reef-orinnano
+WorkingDirectory=/home/reef-orinnano/workspace/hypha-whisper-node
+Environment="PATH=/home/reef-orinnano/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+ExecStart=/usr/bin/python3 /home/reef-orinnano/workspace/hypha-whisper-node/watchdog.py
+
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hypha-whisper-watchdog
+
+[Install]
+WantedBy=multi-user.target

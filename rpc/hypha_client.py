@@ -26,7 +26,7 @@ import queue
 import socket
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
 from hypha_rpc import connect_to_server
 
@@ -161,7 +161,7 @@ async def live_transcript_page():
 
 
 @app.get("/transcript_feed")
-async def transcript_feed(request: Request):
+async def transcript_feed():
     """
     SSE endpoint: streams live Whisper transcript segments.
 
@@ -178,9 +178,6 @@ async def transcript_feed(request: Request):
         loop = asyncio.get_event_loop()
         try:
             while True:
-                if await request.is_disconnected():
-                    logger.info("[transcript_feed] Client disconnected")
-                    break
                 # Block up to 15 s waiting for a voiced audio chunk.
                 try:
                     pcm = await asyncio.wait_for(
@@ -188,12 +185,19 @@ async def transcript_feed(request: Request):
                         timeout=15.0,
                     )
                 except (asyncio.TimeoutError, queue.Empty):
+                    yield ": keep-alive\n\n"
                     continue
 
-                text = await loop.run_in_executor(None, _whisper.transcribe, pcm)
+                try:
+                    text = await loop.run_in_executor(None, _whisper.transcribe, pcm)
+                except Exception as exc:
+                    logger.error("[transcript_feed] Transcription error: %s", exc, exc_info=True)
+                    continue
                 if text:
                     logger.info("[transcript] %s", text)
                     yield f"data: {text}\n\n"
+        except Exception as exc:
+            logger.error("[transcript_feed] SSE generator error: %s", exc, exc_info=True)
         finally:
             # Drain stale audio so the next connection starts clean.
             drained = 0
