@@ -7,8 +7,68 @@ machine without a microphone, GPU, or Hypha connection.
 
 import queue
 import math
+import subprocess
 import pytest
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Service management — stop hypha-whisper before hardware tests, restore after
+# ---------------------------------------------------------------------------
+
+def _service_is_active() -> bool:
+    result = subprocess.run(
+        ["systemctl", "is-active", "--quiet", "hypha-whisper"],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def _sudo_passwordless() -> bool:
+    """Return True if sudo systemctl can run without a password prompt."""
+    result = subprocess.run(
+        ["sudo", "-n", "systemctl", "is-active", "hypha-whisper"],
+        capture_output=True,
+    )
+    # returncode 1 = inactive (ok), 3 = unknown (ok) — but not "sudo: a password is required"
+    return b"password" not in result.stderr
+
+
+def _service_control(action: str):
+    subprocess.run(["sudo", "systemctl", action, "hypha-whisper"], check=True)
+
+
+@pytest.fixture(scope="session", autouse=False)
+def suspend_service():
+    """Stop hypha-whisper before hardware tests; restart it afterward if it was running.
+
+    Requires passwordless sudo for systemctl start/stop. Set up once with:
+        echo "YOUR_USER ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \\
+            | sudo tee /etc/sudoers.d/hypha-whisper-tests
+
+    If passwordless sudo is not configured, the fixture warns and skips
+    service management — stop the service manually before running hardware tests.
+    """
+    can_sudo = _sudo_passwordless()
+    was_running = _service_is_active()
+
+    if was_running:
+        if can_sudo:
+            print("\n[fixture] Stopping hypha-whisper service for hardware tests...")
+            _service_control("stop")
+        else:
+            pytest.skip(
+                "hypha-whisper is running and passwordless sudo is not configured. "
+                "Either stop it manually ('sudo systemctl stop hypha-whisper') "
+                "or add a sudoers rule — see conftest.py suspend_service docstring."
+            )
+
+    yield
+
+    if was_running and can_sudo:
+        print("\n[fixture] Restarting hypha-whisper service...")
+        _service_control("start")
+        print("[fixture] hypha-whisper restarted.")
 
 
 # ---------------------------------------------------------------------------

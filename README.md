@@ -1,7 +1,7 @@
 # hypha-whisper-node
 
 Portable real-time speech-to-text node powered by Whisper and Jetson Orin Nano.
-Captures speech via HIKVISION USB camera mic, transcribes on-device, and streams results through [Hypha RPC](https://pypi.org/project/hypha-rpc/).
+Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the LocalAgreement streaming algorithm, and streams results through [Hypha RPC](https://pypi.org/project/hypha-rpc/).
 
 ---
 
@@ -10,23 +10,24 @@ Captures speech via HIKVISION USB camera mic, transcribes on-device, and streams
 | Component | Details |
 |---|---|
 | Compute | Jetson Orin Nano (JetPack 6.2, CUDA 12.6) |
-| Microphone | HIKVISION USB camera built-in mic (16 kHz mono) |
+| Microphone | ReSpeaker 4 Mic Array v2.0 (UAC1.0, 16 kHz, beamformed ch0) |
+| Speaker (test) | Dell AC511 USB SoundBar |
 | Power | USB-C PD power bank |
 | Enclosure | 3D printed shell (ventilation + antenna ports) |
 
-**Device stack:** HIKVISION USB camera → Jetson Orin Nano inside 3D printed shell.
+**Mic auto-detection:** ReSpeaker is tried first; falls back to HIK 1080P Camera if not found. Override with `--mic "name-substring"`.
 
 ---
 
 ## Features
 
-- On-device Whisper transcription (GPU, works offline)
+- Continuous streaming transcription using **whisper_streaming LocalAgreement** — no word-boundary errors from chunk splitting
+- On-device Whisper inference via PyTorch (GPU, works offline)
 - Real-time transcript streaming via Hypha ASGI service (SSE)
 - Live transcript viewer — browser-based HTML page at `/`
-- Two-stage noise rejection: webrtcvad VAD + bandpass filter (300–3400 Hz) + RMS normalisation
-- Hallucination suppression: `condition_on_previous_text=False` + post-processing regex
+- ReSpeaker 4 Mic Array: hardware beamforming + 4-mic noise suppression via ch0
 - Auto-reconnect to Hypha on network loss (exponential backoff)
-- systemd service with watchdog and auto-restart
+- systemd service with watchdog (`WatchdogSec=180`) and auto-restart
 
 ---
 
@@ -38,7 +39,7 @@ Captures speech via HIKVISION USB camera mic, transcribes on-device, and streams
 | **base.en** (default) | **0.40 s** | 4 s |
 | small.en | 0.92 s | 26 s |
 
-`base.en` is the default — it offers significantly better accuracy for natural speech with acceptable latency. Use `--model base.en` if lower latency is required.
+`base.en` with `whisper-timestamped` backend (PyTorch + CUDA) is the default. LocalAgreement adds ~3–5 s commit latency but eliminates word-boundary errors.
 
 ---
 
@@ -51,6 +52,8 @@ sudo ./setup.sh
 ```
 
 `setup.sh` installs system packages, PyTorch (NVIDIA JP6.1 wheel), all Python deps, and creates `/etc/hypha-whisper/config.env`.
+
+> **numpy pin:** `numpy==1.26.4` is pinned in `requirements.txt`. Do not upgrade — `whisper-timestamped` pulls numpy 2.x which breaks PyTorch's ABI on Jetson.
 
 ### Configure secrets
 
@@ -89,10 +92,10 @@ sudo systemctl enable --now hypha-whisper
 Logs look like:
 
 ```
-2026-03-06T09:00:01 INFO [main] Initialising microphone capture...
-2026-03-06T09:00:05 INFO [hypha] Connected to https://hypha.aicell.io (workspace: reef-imaging)
-2026-03-06T09:00:05 INFO [hypha] ASGI service 'hypha-whisper' registered.
-2026-03-06T09:00:15 INFO [transcript] Hello, how are you today
+2026-03-09T12:55:19 INFO [MicCapture] Found 'ReSpeaker 4 Mic Array...' at device index 24 (capture ch=6, use ch=0)
+2026-03-09T12:55:25 INFO [StreamingEngine] Ready
+2026-03-09T12:55:31 INFO [hypha] Connected to https://hypha.aicell.io (workspace: reef-imaging)
+2026-03-09T12:55:54 INFO [transcript] hello, are you there?
 ```
 
 If the Hypha server drops, the service reconnects automatically (exponential backoff, max 60 s).
@@ -106,7 +109,7 @@ Once running, the service exposes three endpoints via Hypha:
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Live transcript viewer — open in any browser |
-| `GET /transcript_feed` | SSE stream — one `data: <text>` event per utterance |
+| `GET /transcript_feed` | SSE stream — one `data: <text>` event per committed phrase |
 | `GET /health` | JSON: `{"status":"ok","model":"base.en","uptime_seconds":123}` |
 
 Full URL pattern:
@@ -141,14 +144,54 @@ python3 main.py \
   --server https://hypha.aicell.io/ \
   --workspace my-workspace \
   --token my-token \
-  --model base.en
+  --model base.en \
+  --backend whisper-timestamped
+```
+
+Override microphone:
+```bash
+python3 main.py --mic "ReSpeaker"     # force ReSpeaker
+python3 main.py --mic "HIK"           # force HIK camera mic
 ```
 
 Offline mode (transcribe to stdout, no Hypha):
-
 ```bash
 python3 main.py --server ""
 ```
+
+---
+
+## Testing
+
+### Unit tests (no hardware required)
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -m "not hardware and not integration and not slow"
+```
+
+### Hardware loopback tests (ReSpeaker + Dell AC511 required)
+
+Plays the Dark Knight Rises Bane monologue through the speaker, records via ReSpeaker, transcribes, and measures Word Error Rate.
+
+```bash
+# One-time: allow passwordless sudo for service management
+echo "reef-orinnano ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \
+    | sudo tee /etc/sudoers.d/hypha-whisper-tests
+
+# Run all hardware tests (auto stops/restarts service)
+./scripts/run_hardware_tests.sh
+
+# Run a specific test
+./scripts/run_hardware_tests.sh -k wer
+./scripts/run_hardware_tests.sh -k "rms or playback"
+```
+
+| Test | What it checks |
+|------|---------------|
+| `test_speaker_playback_only` | Dell AC511 plays without error |
+| `test_mic_capture_rms` | ReSpeaker picks up speaker audio (RMS > 0.001) |
+| `test_acoustic_loopback_wer` | Full pipeline WER < 35% against reference transcript |
 
 ---
 
