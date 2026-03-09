@@ -22,65 +22,56 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "base.en"
 
 
-class _JetsonFasterWhisperASR:
-    """faster-whisper backend subclass tuned for Jetson Orin Nano.
 
-    Overrides load_model() to use device="auto" and compute_type="float32"
-    so it auto-selects CUDA and avoids float16 precision issues on Tegra.
-    Mirrors the FasterWhisperASR interface from whisper_online.py.
+class _OptimizedWhisperTimestampedASR:
+    """Optimized whisper-timestamped backend for Jetson Orin Nano GPU.
+
+    Uses fp16 on CUDA, beam_size=3, and condition_on_previous_text=False
+    for faster streaming transcription with LocalAgreement.
     """
 
-    sep = ""
+    sep = " "
 
     def __init__(self, lan, modelsize=None, cache_dir=None, model_dir=None, logfile=sys.stderr):
         self.original_language = lan
-        self.modelsize = modelsize
-        self.cache_dir = cache_dir
-        self.model_dir = model_dir
-        self.logfile = logfile
         self.transcribe_kargs = {}
-        self.model = None  # loaded lazily by load_model()
-
-    def load_model(self):
-        from faster_whisper import WhisperModel
-        model_size_or_path = self.model_dir or self.modelsize
-        if not model_size_or_path:
-            raise ValueError("modelsize or model_dir must be set")
-        logger.info("[_JetsonFasterWhisperASR] Loading '%s' on cpu (float32)...", model_size_or_path)
-        self.model = WhisperModel(
-            model_size_or_path,
-            device="cpu",
-            compute_type="float32",
-            download_root=self.cache_dir,
-        )
-        return self.model
+        import whisper
+        import whisper_timestamped
+        from whisper_timestamped import transcribe_timestamped
+        self.transcribe_timestamped = transcribe_timestamped
+        logger.info("[_OptimizedWhisperTimestampedASR] Loading '%s'...", modelsize or model_dir)
+        self.model = whisper.load_model(modelsize or model_dir, download_root=cache_dir)
+        logger.info("[_OptimizedWhisperTimestampedASR] Model loaded")
 
     def transcribe(self, audio, init_prompt=""):
-        segments, info = self.model.transcribe(
+        import torch
+        use_fp16 = torch.cuda.is_available()
+        result = self.transcribe_timestamped(
+            self.model,
             audio,
             language=self.original_language,
             initial_prompt=init_prompt if init_prompt else None,
-            beam_size=5,
-            word_timestamps=True,
+            verbose=None,
             condition_on_previous_text=False,
+            fp16=use_fp16,
+            beam_size=3,
             **self.transcribe_kargs,
         )
-        return list(segments)
+        return result
 
-    def ts_words(self, segments):
-        out = []
-        for segment in segments:
-            if segment.no_speech_prob > 0.9:
-                continue
-            for word in segment.words:
-                out.append((word.start, word.end, word.word))
-        return out
+    def ts_words(self, r):
+        o = []
+        for s in r["segments"]:
+            for w in s["words"]:
+                t = (w["start"], w["end"], w["text"])
+                o.append(t)
+        return o
 
     def segments_end_ts(self, res):
-        return [s.end for s in res]
+        return [s["end"] for s in res["segments"]]
 
     def use_vad(self):
-        self.transcribe_kargs["vad_filter"] = True
+        self.transcribe_kargs["vad"] = True
 
     def set_translate_task(self):
         self.transcribe_kargs["task"] = "translate"
@@ -99,9 +90,9 @@ class StreamingEngine:
         self,
         model_name: str = DEFAULT_MODEL,
         language: str = "en",
-        backend: str = "faster-whisper",
-        use_vac: bool = False,
+        use_vac: bool = True,
         chunk_seconds: float = 0.5,
+        buffer_trimming_sec: float = 8.0,
     ):
         self.model_name = model_name
         self.text_queue: queue.Queue[str] = queue.Queue()
@@ -116,28 +107,43 @@ class StreamingEngine:
         if _root not in sys.path:
             sys.path.insert(0, _root)
 
-        from whisper_online import (
-            WhisperTimestampedASR,
-            FasterWhisperASR,
-            OnlineASRProcessor,
-            VACOnlineASRProcessor,
-        )
+        from whisper_online import OnlineASRProcessor, VACOnlineASRProcessor
 
-        logger.info("[StreamingEngine] Loading model '%s' backend='%s'...", model_name, backend)
-        if backend == "faster-whisper":
-            # _JetsonFasterWhisperASR does NOT load in __init__, so call explicitly.
-            asr = _JetsonFasterWhisperASR(lan=language, modelsize=model_name)
-            asr.load_model()
-        else:
-            # WhisperTimestampedASR (ASRBase) loads the model inside __init__.
-            asr = WhisperTimestampedASR(lan=language, modelsize=model_name)
+        logger.info("[StreamingEngine] Loading model '%s'...", model_name)
+        asr = _OptimizedWhisperTimestampedASR(lan=language, modelsize=model_name)
+
+        buffer_trimming = ("segment", buffer_trimming_sec)
 
         if use_vac:
             logger.info("[StreamingEngine] Using VACOnlineASRProcessor (Silero VAD)")
-            self._online = VACOnlineASRProcessor(chunk_seconds, asr)
+            # Patch torch.hub.load so silero-vad JIT loads directly,
+            # avoiding the torchaudio dependency in the hub's utils_vad.py.
+            import torch
+            _orig_hub_load = torch.hub.load
+
+            def _hub_load_patch(repo_or_dir, model, *a, **kw):
+                if "silero-vad" in str(repo_or_dir) and model == "silero_vad":
+                    jit_path = os.path.expanduser(
+                        "~/.cache/torch/hub/snakers4_silero-vad_master"
+                        "/src/silero_vad/data/silero_vad.jit"
+                    )
+                    if os.path.exists(jit_path):
+                        logger.info("[StreamingEngine] Loading silero-vad JIT from cache: %s", jit_path)
+                        m = torch.jit.load(jit_path, map_location="cpu")
+                        m.eval()
+                        return m, None
+                return _orig_hub_load(repo_or_dir, model, *a, **kw)
+
+            torch.hub.load = _hub_load_patch
+            try:
+                self._online = VACOnlineASRProcessor(
+                    chunk_seconds, asr, buffer_trimming=buffer_trimming
+                )
+            finally:
+                torch.hub.load = _orig_hub_load
         else:
             logger.info("[StreamingEngine] Using OnlineASRProcessor (no VAD)")
-            self._online = OnlineASRProcessor(asr)
+            self._online = OnlineASRProcessor(asr, buffer_trimming=buffer_trimming)
 
         logger.info("[StreamingEngine] Ready")
 
@@ -164,12 +170,34 @@ class StreamingEngine:
     def finish_session(self) -> Optional[str]:
         """Flush remaining audio context at end of client session.
 
+        For VACOnlineASRProcessor: VAC's is_currently_final path skips
+        online.process_iter() and jumps straight to online.finish(), so the
+        last speech segment audio is in online.audio_buffer but
+        transcript_buffer.buffer is stale.  We fix this by running one extra
+        process_iter() pass on the underlying OnlineASRProcessor before the
+        final finish() so LocalAgreement sees the last segment.
+
         Safe to call multiple times — subsequent calls are no-ops.
         Returns committed text from the final flush, or None.
         """
         if self._finished:
             return None
         self._finished = True
+
+        # Extra pass for VACOnlineASRProcessor: transcribe audio accumulated
+        # in the underlying OnlineASRProcessor that wasn't run through
+        # process_iter() before VAC's finish() path was triggered.
+        try:
+            from whisper_online import VACOnlineASRProcessor
+            if isinstance(self._online, VACOnlineASRProcessor):
+                begin, end, text = self._online.online.process_iter()
+                text = text.strip() if text else ""
+                if text:
+                    self.text_queue.put(text)
+                    logger.info("[StreamingEngine] Pre-flush committed: %r", text)
+        except Exception as exc:
+            logger.warning("[StreamingEngine] pre-flush process_iter raised: %s", exc)
+
         try:
             begin, end, text = self._online.finish()
         except Exception as exc:

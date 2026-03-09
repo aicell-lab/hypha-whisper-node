@@ -64,9 +64,6 @@ def parse_args():
                    help="Workspace token (default: $HYPHA_WORKSPACE_TOKEN)")
     p.add_argument("--model", default="base.en",
                    help="Whisper model name (default: base.en)")
-    p.add_argument("--backend", default="faster-whisper",
-                   choices=["whisper-timestamped", "faster-whisper"],
-                   help="ASR backend (default: faster-whisper)")
     p.add_argument("--device", default="",
                    help="PyTorch device: cuda or cpu (default: auto)")
     p.add_argument("--mic", default="",
@@ -131,12 +128,9 @@ async def main():
     # ------------------------------------------------------------------
     # Streaming engine (loads Whisper model)
     # ------------------------------------------------------------------
-    logger.info("[main] Loading Whisper model '%s' (backend=%s)...", args.model, args.backend)
+    logger.info("[main] Loading Whisper model '%s'...", args.model)
     from transcribe.streaming_engine import StreamingEngine
-    engine = StreamingEngine(
-        model_name=args.model,
-        backend=args.backend,
-    )
+    engine = StreamingEngine(model_name=args.model)
 
     # ------------------------------------------------------------------
     # Graceful shutdown

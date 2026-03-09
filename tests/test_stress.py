@@ -197,7 +197,7 @@ def test_30min_continuous_transcription():
     from transcribe.streaming_engine import StreamingEngine
 
     mic = MicCapture()
-    engine = StreamingEngine(model_name="base.en", backend="whisper-timestamped")
+    engine = StreamingEngine(model_name="base.en")
     engine.init_session()
 
     mic.start()

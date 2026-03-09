@@ -46,8 +46,8 @@ MIC_NAME = "ReSpeaker"        # substring match for input device
 
 SPEAKER_RATE = 44100
 SPEAKER_CHANNELS = 2
-POST_PLAYBACK_WAIT = 50      # extra seconds after playback ends to let LocalAgreement flush buffer
-WER_PASS_THRESHOLD = 0.40     # 40% WER — allows for room acoustics degradation
+POST_PLAYBACK_WAIT = 10      # extra seconds after playback ends to let VAC/LocalAgreement flush buffer
+WER_PASS_THRESHOLD = 0.20     # 20% WER = 80% accuracy target
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ def test_acoustic_loopback_wer():
 
     # Start mic capture and engine
     mic = MicCapture(preferred_mic=MIC_NAME)
-    engine = StreamingEngine(model_name="base.en", backend="whisper-timestamped")
+    engine = StreamingEngine(model_name="base.en", use_vac=True)
     engine.init_session()
     mic.start()
 
