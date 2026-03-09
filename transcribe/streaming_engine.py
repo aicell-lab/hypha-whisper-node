@@ -7,12 +7,18 @@ Usage:
     engine.init_session()          # called when SSE client connects
     text = engine.process_audio(chunk)   # np.float32, 16 kHz, any size
     engine.finish_session()        # called when SSE client disconnects
+
+text_queue items are dicts: {"text": str, "speaker": str, "angle": int|None}
+when DOAReader / SpeakerRegistry are available, otherwise plain str for
+backwards compatibility.
 """
 
+import concurrent.futures
 import logging
 import queue
 import sys
 import os
+import time
 from typing import Optional
 
 import numpy as np
@@ -20,6 +26,31 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "base.en"
+
+
+def _try_import_doa():
+    """Lazy import of DOAReader — returns class or None."""
+    try:
+        # Ensure project root is in sys.path for 'audio' package
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from audio.doa_reader import DOAReader
+        return DOAReader
+    except Exception:
+        return None
+
+
+def _try_import_speaker_registry():
+    """Lazy import of SpeakerRegistry — returns class or None."""
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from transcribe.speaker_registry import SpeakerRegistry
+        return SpeakerRegistry
+    except Exception:
+        return None
 
 
 
@@ -82,8 +113,10 @@ class StreamingEngine:
 
     Attributes:
         model_name: Whisper model name (used by /health endpoint).
-        text_queue: Queue[str] — committed transcript segments placed here
-                    by process_audio(). Consumed by HyphaClient's sse_gen().
+        text_queue: Queue of committed transcript items. Each item is either:
+            - dict: {"text": str, "speaker": str, "angle": int|None}  (when speaker ID is active)
+            - str:  plain committed text  (legacy/fallback)
+          Consumed by HyphaClient's sse_gen().
     """
 
     def __init__(
@@ -93,10 +126,46 @@ class StreamingEngine:
         use_vac: bool = True,
         chunk_seconds: float = 0.5,
         buffer_trimming_sec: float = 8.0,
+        enable_doa: bool = True,
+        enable_speaker_id: bool = True,
     ):
         self.model_name = model_name
-        self.text_queue: queue.Queue[str] = queue.Queue()
+        self.text_queue: queue.Queue = queue.Queue()
         self._finished = False
+
+        # DOA reader (optional — USB hardware DOA via ReSpeaker ctrl_transfer)
+        self._doa: Optional[object] = None
+        if enable_doa:
+            _DOAReader = _try_import_doa()
+            if _DOAReader is not None:
+                try:
+                    self._doa = _DOAReader()
+                    self._doa.start()
+                except Exception as exc:
+                    logger.warning("[StreamingEngine] DOAReader init failed: %s", exc)
+                    self._doa = None
+
+        # Speaker registry (optional)
+        self._speaker_registry: Optional[object] = None
+        if enable_speaker_id:
+            _SpeakerRegistry = _try_import_speaker_registry()
+            if _SpeakerRegistry is not None:
+                try:
+                    self._speaker_registry = _SpeakerRegistry()
+                except Exception as exc:
+                    logger.warning("[StreamingEngine] SpeakerRegistry init failed: %s", exc)
+                    self._speaker_registry = None
+
+        # Audio accumulator for speaker embedding (collects audio between commits)
+        self._audio_since_last_commit: list = []
+        self._last_commit_time: float = 0.0
+
+        # Thread pool for async speaker identification (1 worker to avoid concurrent CUDA calls)
+        self._speaker_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        if self._speaker_registry is not None:
+            self._speaker_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="speaker-id"
+            )
 
         # Add transcribe/ to sys.path so whisper_online.py can be imported
         _here = os.path.dirname(__file__)
@@ -165,6 +234,10 @@ class StreamingEngine:
             except queue.Empty:
                 break
         self._online.init()
+        self._audio_since_last_commit = []
+        self._last_commit_time = time.monotonic()
+        if self._speaker_registry is not None:
+            self._speaker_registry.reset()
         logger.info("[StreamingEngine] Session initialised")
 
     def finish_session(self) -> Optional[str]:
@@ -193,7 +266,10 @@ class StreamingEngine:
                 begin, end, text = self._online.online.process_iter()
                 text = text.strip() if text else ""
                 if text:
-                    self.text_queue.put(text)
+                    audio_snapshot = list(self._audio_since_last_commit)
+                    self._audio_since_last_commit = []
+                    commit_time = self._last_commit_time
+                    self._emit_item_async(text, audio_snapshot, commit_time)
                     logger.info("[StreamingEngine] Pre-flush committed: %r", text)
         except Exception as exc:
             logger.warning("[StreamingEngine] pre-flush process_iter raised: %s", exc)
@@ -205,10 +281,21 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
-            self.text_queue.put(text)
+            audio_snapshot = list(self._audio_since_last_commit)
+            self._audio_since_last_commit = []
+            commit_time = self._last_commit_time
+            self._emit_item_async(text, audio_snapshot, commit_time)
             logger.info("[StreamingEngine] Flushed final: %r", text)
-            return text
-        return None
+
+        # Wait for any in-flight speaker ID tasks to complete and push their items
+        if self._speaker_executor is not None:
+            self._speaker_executor.shutdown(wait=True, cancel_futures=False)
+            # Re-create executor for next session
+            self._speaker_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="speaker-id"
+            )
+
+        return text if text else None
 
     # ------------------------------------------------------------------
     # Audio processing
@@ -222,6 +309,9 @@ class StreamingEngine:
         Returns:
             Committed text string, or None if nothing committed yet.
         """
+        # Accumulate audio for speaker embedding
+        self._audio_since_last_commit.append(chunk)
+
         self._online.insert_audio_chunk(chunk)
         try:
             begin, end, text = self._online.process_iter()
@@ -230,7 +320,52 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
-            self.text_queue.put(text)
+            # Snapshot audio buffer and reset before async embedding so subsequent
+            # audio is not included in this segment's embedding.
+            audio_snapshot = list(self._audio_since_last_commit)
+            self._audio_since_last_commit = []
+            commit_time = self._last_commit_time
+            self._last_commit_time = time.monotonic()
+
+            self._emit_item_async(text, audio_snapshot, commit_time)
             logger.debug("[StreamingEngine] Committed [%.2f–%.2f]: %r", begin or 0, end or 0, text)
             return text
         return None
+
+    def _emit_item_async(self, text: str, audio_snapshot: list, commit_time: float) -> None:
+        """Identify speaker asynchronously and push item to text_queue when done."""
+        if self._speaker_executor is None:
+            # No speaker ID — emit immediately with defaults
+            self.text_queue.put(self._build_item_sync(text, audio_snapshot, commit_time))
+            return
+
+        def _task():
+            item = self._build_item_sync(text, audio_snapshot, commit_time)
+            self.text_queue.put(item)
+
+        self._speaker_executor.submit(_task)
+
+    # ------------------------------------------------------------------
+    # Speaker identification helpers
+    # ------------------------------------------------------------------
+
+    def _build_item_sync(self, text: str, audio_snapshot: list, commit_time: float) -> dict:
+        """Build a text_queue item with optional speaker ID and DOA angle.
+
+        This may block for embedding computation — runs in the speaker-id
+        thread pool when speaker identification is enabled.
+        """
+        speaker = "Speaker 1"
+        angle: Optional[int] = None
+
+        if self._doa is not None and self._doa.enabled:
+            angle = self._doa.median_angle_since(commit_time)
+
+        if self._speaker_registry is not None:
+            audio_buf = np.concatenate(audio_snapshot) if audio_snapshot else np.zeros(0, dtype=np.float32)
+            try:
+                speaker = self._speaker_registry.identify(audio_buf, sample_rate=16000, doa_angle=angle)
+            except Exception as exc:
+                logger.warning("[StreamingEngine] Speaker identify error: %s", exc)
+
+        return {"text": text, "speaker": speaker, "angle": angle}

@@ -118,7 +118,7 @@ Build a portable, real-time speech-to-text edge node that:
 ### Phase 8 — ReSpeaker Mic Array Upgrade
 - [x] Procure ReSpeaker Mic Array v2.0
 - [x] Install ReSpeaker USB driver — UAC1.0 class-compliant, no custom driver needed on Linux
-- [ ] Test beamforming / noise suppression vs. HIKVISION baseline (use `test_hardware_loopback.py`)
+- [x] Test beamforming / noise suppression vs. HIKVISION baseline (use `test_hardware_loopback.py`)
 - [x] Tune channel selection and sample rate — 16 kHz native, ch0 = beamformed output
 - [x] Update `audio/capture.py` with ReSpeaker device support (auto-detect; switchable via `--mic` CLI flag)
 
@@ -175,6 +175,12 @@ hypha-whisper-node/
 
 ---
 
+## Working Convention
+
+- **sudo commands**: If a `sudo` command is needed during implementation, STOP and ask the user to run it — do not attempt to run it yourself or assume it was already done.
+
+---
+
 ## Notes
 
 - Target latency: ~3–5 s commit latency (LocalAgreement; trade-off for accuracy)
@@ -183,3 +189,6 @@ hypha-whisper-node/
 - Hypha server: configurable via CLI; supports offline mode (transcribe only, no streaming)
 - Current mic: ReSpeaker 4 Mic Array v2.0 (6-ch UAC1.0, 16 kHz, beamformed ch0)
 - numpy must stay at 1.26.4 — whisper-timestamped upgrades it to 2.x breaking PyTorch ABI
+- `sudo python3` on Jetson has no pip and no user site-packages; run sudo scripts with user packages via:
+  `sudo PYTHONPATH=/home/reef-orinnano/.local/lib/python3.10/site-packages python3 <script.py>`
+- **ReSpeaker DOA**: USB hardware DOA (firmware v4.0) broken on Linux/Jetson; firmware downgrade confirmed same v4.0. Fixed via **software GCC-PHAT DOA** (`_SoftwareDOAProcessor` in `audio/doa_reader.py`, pyroomacoustics SRP-PHAT on ch1–4 raw mics). Requires `pip install --user pyroomacoustics`. Wired: `MicCapture.multichannel_queue` → `StreamingEngine(multichannel_queue=...)` → `DOAReader`.

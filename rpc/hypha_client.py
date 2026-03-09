@@ -19,6 +19,7 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import os
 import queue
@@ -44,6 +45,21 @@ _text_queue = None
 _start_time: float = 0.0
 
 app = FastAPI()
+
+
+def _item_to_json(item) -> str:
+    """Convert a text_queue item to a JSON string for SSE payload.
+
+    Accepts either:
+      - dict: {"text": str, "speaker": str, "angle": int|None}
+      - str:  legacy plain text (wrapped into {"text": ..., "speaker": "", "angle": null})
+    """
+    if isinstance(item, dict):
+        return json.dumps({"text": item.get("text", ""),
+                           "speaker": item.get("speaker", ""),
+                           "angle": item.get("angle")})
+    # Legacy str
+    return json.dumps({"text": str(item), "speaker": "", "angle": None})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -92,7 +108,6 @@ async def live_transcript_page():
       font-size: 1.05rem;
       line-height: 1.75;
       color: #222;
-      white-space: pre-wrap;
       word-break: break-word;
     }
     #transcript-box:empty::before {
@@ -100,6 +115,18 @@ async def live_transcript_page():
       color: #aaa;
       font-style: italic;
     }
+    .segment { margin-bottom: 6px; }
+    .badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 1px 7px;
+      border-radius: 99px;
+      margin-right: 6px;
+      vertical-align: middle;
+      opacity: 0.9;
+    }
+    .seg-text { vertical-align: middle; }
     footer {
       display: flex;
       justify-content: flex-end;
@@ -130,6 +157,59 @@ async def live_transcript_page():
     const box    = document.getElementById('transcript-box');
     const status = document.getElementById('status');
 
+    // Speaker colour palette (cycle by speaker index)
+    const PALETTE = [
+      ['#1a73e8','#e8f0fe'], ['#e67c00','#fef3e2'], ['#188038','#e6f4ea'],
+      ['#a142f4','#f3e8fd'], ['#c5221f','#fce8e6'], ['#007b83','#e4f7fb'],
+    ];
+    const speakerColors = {};
+    let speakerCount = 0;
+
+    function speakerColor(label) {
+      if (!(label in speakerColors)) {
+        speakerColors[label] = PALETTE[speakerCount % PALETTE.length];
+        speakerCount++;
+      }
+      return speakerColors[label];
+    }
+
+    function appendSegment(data) {
+      let text, speaker, angle;
+      try {
+        const obj = JSON.parse(data);
+        text    = obj.text    || '';
+        speaker = obj.speaker || '';
+        angle   = obj.angle   != null ? obj.angle + '°' : null;
+      } catch (_) {
+        // legacy plain-text fallback
+        text    = data;
+        speaker = '';
+        angle   = null;
+      }
+      if (!text.trim()) return;
+
+      const seg = document.createElement('div');
+      seg.className = 'segment';
+
+      if (speaker) {
+        const [fg, bg] = speakerColor(speaker);
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.style.color = fg;
+        badge.style.background = bg;
+        badge.textContent = angle ? `${speaker} | ${angle}` : speaker;
+        seg.appendChild(badge);
+      }
+
+      const span = document.createElement('span');
+      span.className = 'seg-text';
+      span.textContent = text;
+      seg.appendChild(span);
+
+      box.appendChild(seg);
+      box.scrollTop = box.scrollHeight;
+    }
+
     function connect() {
       const src = new EventSource('transcript_feed');
 
@@ -139,10 +219,7 @@ async def live_transcript_page():
       };
 
       src.onmessage = (e) => {
-        const text = e.data.trim();
-        if (!text) return;
-        box.textContent += (box.textContent ? ' ' : '') + text;
-        box.scrollTop = box.scrollHeight;
+        appendSegment(e.data);
       };
 
       src.onerror = () => {
@@ -186,12 +263,13 @@ async def transcript_feed():
         try:
             while True:
                 try:
-                    text = await asyncio.wait_for(
+                    item = await asyncio.wait_for(
                         loop.run_in_executor(None, _text_queue.get, True, 0.5),
                         timeout=15.0,
                     )
-                    logger.info("[transcript] %s", text)
-                    yield f"data: {text}\n\n"
+                    payload = _item_to_json(item)
+                    logger.info("[transcript] %s", payload)
+                    yield f"data: {payload}\n\n"
                 except (asyncio.TimeoutError, queue.Empty):
                     # queue.Empty propagates from run_in_executor when the
                     # 0.5s blocking timeout expires — treat as keep-alive.
@@ -203,7 +281,8 @@ async def transcript_feed():
             final = await loop.run_in_executor(None, _engine.finish_session)
             if final:
                 logger.info("[transcript] (final) %s", final)
-                yield f"data: {final}\n\n"
+                payload = _item_to_json(final)
+                yield f"data: {payload}\n\n"
             # Drain any leftover text so next connection starts fresh.
             while not _text_queue.empty():
                 try:

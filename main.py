@@ -130,7 +130,9 @@ async def main():
     # ------------------------------------------------------------------
     logger.info("[main] Loading Whisper model '%s'...", args.model)
     from transcribe.streaming_engine import StreamingEngine
-    engine = StreamingEngine(model_name=args.model)
+    engine = StreamingEngine(
+        model_name=args.model,
+    )
 
     # ------------------------------------------------------------------
     # Graceful shutdown
