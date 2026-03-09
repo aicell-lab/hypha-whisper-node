@@ -77,16 +77,25 @@ class DOAReader:
             logger.warning("[DOAReader] ReSpeaker USB device not found — USB DOA unavailable")
             return
 
-        try:
-            # wValue=0xC0: cmd = 0x80 (read) | 0x00 (offset) | 0x40 (int type)
-            # See tuning.py in respeaker/usb_4_mic_array for cmd calculation.
-            data = dev.ctrl_transfer(0xC0, 0, 0xC0, _DOA_ADDR, 8)
-            angle = struct.unpack('<ii', bytes(data))[0]
-            logger.info("[DOAReader] USB DOA accessible — initial angle: %d°", angle)
-            self._dev = dev
-            self._enabled = True
-        except Exception as exc:
-            logger.warning("[DOAReader] USB DOA unavailable (%s).", exc)
+        # Retry a few times — device may be in transient state after USB
+        # re-enumeration or rapid service restarts.
+        for attempt in range(3):
+            try:
+                # wValue=0xC0: cmd = 0x80 (read) | 0x00 (offset) | 0x40 (int type)
+                # See tuning.py in respeaker/usb_4_mic_array for cmd calculation.
+                data = dev.ctrl_transfer(0xC0, 0, 0xC0, _DOA_ADDR, 8)
+                angle = struct.unpack('<ii', bytes(data))[0]
+                logger.info("[DOAReader] USB DOA accessible — initial angle: %d°", angle)
+                self._dev = dev
+                self._enabled = True
+                return
+            except Exception as exc:
+                if attempt < 2:
+                    logger.debug("[DOAReader] ctrl_transfer attempt %d failed (%s), retrying...",
+                                 attempt + 1, exc)
+                    time.sleep(1.0)
+                else:
+                    logger.warning("[DOAReader] USB DOA unavailable after 3 attempts (%s).", exc)
 
     # ------------------------------------------------------------------
     # Thread lifecycle
