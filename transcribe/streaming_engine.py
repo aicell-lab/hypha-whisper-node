@@ -3,7 +3,7 @@ transcribe/streaming_engine.py — Streaming Whisper engine using LocalAgreement
 
 Wraps whisper_streaming's OnlineASRProcessor / VACOnlineASRProcessor.
 Usage:
-    engine = StreamingEngine(model_name="tiny.en")
+    engine = StreamingEngine(model_name="base.en")
     engine.init_session()          # called when SSE client connects
     text = engine.process_audio(chunk)   # np.float32, 16 kHz, any size
     engine.finish_session()        # called when SSE client disconnects
@@ -19,7 +19,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "tiny.en"
+DEFAULT_MODEL = "base.en"
 
 
 class _JetsonFasterWhisperASR:

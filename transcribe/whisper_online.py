@@ -215,7 +215,7 @@ class MLXWhisper(ASRBase):
         model_mapping = {
             "tiny.en": "mlx-community/whisper-tiny.en-mlx",
             "tiny": "mlx-community/whisper-tiny-mlx",
-            "tiny.en": "mlx-community/whisper-tiny.en-mlx",
+            "base.en": "mlx-community/whisper-base.en-mlx",
             "base": "mlx-community/whisper-base-mlx",
             "small.en": "mlx-community/whisper-small.en-mlx",
             "small": "mlx-community/whisper-small-mlx",
