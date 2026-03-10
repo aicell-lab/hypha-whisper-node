@@ -66,17 +66,23 @@ class _OptimizedWhisperTimestampedASR:
     def __init__(self, lan, modelsize=None, cache_dir=None, model_dir=None, logfile=sys.stderr):
         self.original_language = lan
         self.transcribe_kargs = {}
+        import torch
         import whisper
         import whisper_timestamped
         from whisper_timestamped import transcribe_timestamped
         self.transcribe_timestamped = transcribe_timestamped
-        logger.info("[_OptimizedWhisperTimestampedASR] Loading '%s'...", modelsize or model_dir)
-        self.model = whisper.load_model(modelsize or model_dir, download_root=cache_dir)
-        logger.info("[_OptimizedWhisperTimestampedASR] Model loaded")
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "[_OptimizedWhisperTimestampedASR] CUDA not available — "
+                "cannot load Whisper model (check LD_LIBRARY_PATH and GPU state)"
+            )
+        logger.info("[_OptimizedWhisperTimestampedASR] Loading '%s' on cuda...",
+                    modelsize or model_dir)
+        self.model = whisper.load_model(modelsize or model_dir, device="cuda",
+                                        download_root=cache_dir)
+        logger.info("[_OptimizedWhisperTimestampedASR] Model loaded on cuda")
 
     def transcribe(self, audio, init_prompt=""):
-        import torch
-        use_fp16 = torch.cuda.is_available()
         result = self.transcribe_timestamped(
             self.model,
             audio,
@@ -84,7 +90,7 @@ class _OptimizedWhisperTimestampedASR:
             initial_prompt=init_prompt if init_prompt else None,
             verbose=None,
             condition_on_previous_text=False,
-            fp16=use_fp16,
+            fp16=True,
             beam_size=3,
             **self.transcribe_kargs,
         )

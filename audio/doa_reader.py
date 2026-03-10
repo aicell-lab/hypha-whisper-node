@@ -113,11 +113,19 @@ class DOAReader:
                     _POLL_INTERVAL * 1000)
 
     def stop(self) -> None:
-        """Stop the DOA polling thread."""
+        """Stop the DOA polling thread and release the USB device."""
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._dev is not None:
+            try:
+                import usb.util
+                usb.util.dispose_resources(self._dev)
+            except Exception:
+                pass
+            self._dev = None
+        self._enabled = False
 
     def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
