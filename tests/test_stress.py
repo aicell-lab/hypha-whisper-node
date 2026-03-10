@@ -77,7 +77,7 @@ def _parse_gpu_percent(tegrastats_line: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
-async def test_sustained_pipeline_ci(tone_pcm):
+async def test_sustained_pipeline_ci(tone_f32):
     """
     CI comprehensive stress test (~60–120 s):
       - 15 synthetic audio chunks fed through real WhisperEngine (tiny.en)
@@ -108,7 +108,7 @@ async def test_sustained_pipeline_ci(tone_pcm):
     _hc_module.SERVICE_ID = svc_id
 
     engine = WhisperEngine(model_name="tiny.en")
-    mic = MockMicCapture([tone_pcm] * N_CHUNKS)
+    mic = MockMicCapture([tone_f32] * N_CHUNKS)
 
     client = HyphaClient(
         server_url="https://hypha.aicell.io/",
