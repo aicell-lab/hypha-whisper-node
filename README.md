@@ -26,6 +26,7 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 - Real-time transcript streaming via Hypha ASGI service (SSE)
 - Live transcript viewer — browser-based HTML page at `/`
 - ReSpeaker 4 Mic Array: hardware beamforming + 4-mic noise suppression via ch0
+- **Direction-based speaker identification** — ReSpeaker USB DOA angle tags each utterance with the speaker's direction (e.g. `45°`); utterances within ±60° continue as the same speaker, beyond that registers a new one
 - Auto-reconnect to Hypha on network loss (exponential backoff)
 - systemd service with watchdog (`WatchdogSec=180`) and auto-restart
 
@@ -122,6 +123,22 @@ https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/health
 
 Open `https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/` in a browser. The page connects automatically to `transcript_feed` via `EventSource`, accumulates text, and auto-scrolls. A **Clear** button resets the display. The connection indicator shows green when live and retries automatically on disconnect.
 
+Each transcript segment is tagged with a coloured direction badge (e.g. **45°**) showing which direction the speaker came from. Consecutive segments from the same direction are merged into one line.
+
+### SSE payload format
+
+Each `data:` event is a JSON object:
+
+```json
+{"text": "Hello everyone.", "speaker": "45°", "angle": 45}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | string | Committed transcript phrase |
+| `speaker` | string | Speaker direction label, e.g. `"45°"` (empty if DOA unavailable) |
+| `angle` | int \| null | Raw DOA angle in degrees, or `null` |
+
 ### Consuming the SSE stream programmatically
 
 ```python
@@ -171,33 +188,30 @@ pytest tests/ -m "not hardware and not integration and not slow"
 
 ### Hardware loopback tests (ReSpeaker + Dell AC511 required)
 
-Generates a TTS reference clip (via gTTS — natural Google-quality voice), plays it through the Dell AC511 speaker, records via ReSpeaker, transcribes, and measures Word Error Rate. The audio file is generated once and cached in `tests/fixtures/reference.wav`.
-
-**Prerequisites:**
+Plays pre-recorded reference audio (`tests/test-audio-male.wav`) through the Dell AC511 speaker, records via ReSpeaker, transcribes, and measures Word Error Rate.
 
 ```bash
-pip install gtts                          # natural TTS (requires internet on first run)
-sudo apt-get install -y espeak-ng         # fallback TTS if gTTS unavailable
-```
-
-```bash
-# One-time: allow passwordless sudo for service management
+# One-time: allow passwordless sudo for service management during tests
 echo "reef-orinnano ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \
     | sudo tee /etc/sudoers.d/hypha-whisper-tests
 
-# Run all hardware tests (auto stops/restarts service)
-./scripts/run_hardware_tests.sh
+# Run all hardware tests (auto stops/restarts hypha-whisper service)
+pytest tests/test_hardware_loopback.py -m hardware -v
 
 # Run a specific test
-./scripts/run_hardware_tests.sh -k wer
-./scripts/run_hardware_tests.sh -k "rms or playback"
+pytest tests/test_hardware_loopback.py -m hardware -k wer
+pytest tests/test_hardware_loopback.py -m hardware -k "rms or playback"
 ```
+
+The `suspend_service` pytest fixture automatically stops `hypha-whisper` at the start of the test session (to release the mic) and restarts it when done. It runs a background keeper thread that re-stops the service every 3 s to prevent `Restart=always` from reclaiming the microphone mid-test.
 
 | Test | What it checks |
 |------|---------------|
 | `test_speaker_playback_only` | Dell AC511 plays without error |
 | `test_mic_capture_rms` | ReSpeaker picks up speaker audio (RMS > 0.001) |
-| `test_acoustic_loopback_wer` | Full pipeline WER < 40% against gTTS reference transcript |
+| `test_acoustic_loopback_wer` | Full pipeline WER < 30% against reference transcript |
+| `test_speaker_identification` | Left vs right channel → 2 distinct angle labels |
+| `test_speaker_stability_under_variation` | Same direction, varied audio → same angle label |
 
 ---
 

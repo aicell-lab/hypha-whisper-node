@@ -8,6 +8,7 @@ machine without a microphone, GPU, or Hypha connection.
 import queue
 import math
 import subprocess
+import threading
 import pytest
 import numpy as np
 
@@ -24,12 +25,16 @@ def _service_is_active() -> bool:
     return result.returncode == 0
 
 
-def _sudo_passwordless() -> bool:
-    """Return True if sudo systemctl stop/start can run without a password prompt.
+def _service_is_enabled() -> bool:
+    result = subprocess.run(
+        ["systemctl", "is-enabled", "--quiet", "hypha-whisper"],
+        capture_output=True,
+    )
+    return result.returncode == 0
 
-    NOTE: The sudoers rule only allows 'stop' and 'start', not 'is-active',
-    so we test with 'stop' (idempotent — stopping an already-stopped service is safe).
-    """
+
+def _sudo_passwordless() -> bool:
+    """Return True if sudo systemctl stop can run without a password prompt."""
     result = subprocess.run(
         ["sudo", "-n", "systemctl", "stop", "hypha-whisper"],
         capture_output=True,
@@ -38,37 +43,59 @@ def _sudo_passwordless() -> bool:
 
 
 def _service_control(action: str):
-    subprocess.run(["sudo", "systemctl", action, "hypha-whisper"], check=True)
+    subprocess.run(["sudo", "systemctl", action, "hypha-whisper"],
+                   capture_output=True)
 
 
 @pytest.fixture(scope="session", autouse=False)
 def suspend_service():
-    """Stop hypha-whisper before hardware tests; restart it afterward if it was running.
+    """Stop hypha-whisper before hardware tests; restart it afterward if it was enabled.
 
-    Requires passwordless sudo for systemctl start/stop. Set up once with:
+    Requires passwordless sudo for systemctl stop/start. Set up once with:
         echo "YOUR_USER ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \\
             | sudo tee /etc/sudoers.d/hypha-whisper-tests
 
-    If passwordless sudo is not configured, the fixture warns and skips
-    service management — stop the service manually before running hardware tests.
-    """
-    can_sudo = _sudo_passwordless()
-    was_running = _service_is_active()
+    Runs a background keeper thread that unconditionally stops the service every 3 s,
+    preventing systemd's Restart=always (including the activating phase) from
+    reclaiming the microphone during tests.
 
-    if was_running:
-        if can_sudo:
-            print("\n[fixture] Stopping hypha-whisper service for hardware tests...")
-            _service_control("stop")
-        else:
+    If passwordless sudo is not configured, the fixture skips with instructions.
+    """
+    # Check enabled state BEFORE _sudo_passwordless() which stops the service as a side-effect.
+    was_enabled = _service_is_enabled()
+    can_sudo = _sudo_passwordless()  # also stops the service if running
+
+    if _service_is_active():
+        if not can_sudo:
             pytest.skip(
                 "hypha-whisper is running and passwordless sudo is not configured. "
                 "Either stop it manually ('sudo systemctl stop hypha-whisper') "
                 "or add a sudoers rule — see conftest.py suspend_service docstring."
             )
 
+    if not can_sudo:
+        yield
+        return
+
+    print("\n[fixture] hypha-whisper stopped; keeping it down during tests...")
+
+    # Keeper: stop unconditionally every 3 s — catches activating+active phases.
+    _stop_keeper = threading.Event()
+
+    def _keep_stopped():
+        while not _stop_keeper.is_set():
+            _service_control("stop")
+            _stop_keeper.wait(3)
+
+    keeper_thread = threading.Thread(target=_keep_stopped, daemon=True)
+    keeper_thread.start()
+
     yield
 
-    if was_running and can_sudo:
+    _stop_keeper.set()
+    keeper_thread.join(timeout=5)
+
+    if was_enabled:
         print("\n[fixture] Restarting hypha-whisper service...")
         _service_control("start")
         print("[fixture] hypha-whisper restarted.")

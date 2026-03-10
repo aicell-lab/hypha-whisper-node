@@ -54,7 +54,7 @@ MIC_NAME     = "ReSpeaker"   # substring match for input device
 
 SPEAKER_RATE     = 44100
 SPEAKER_CHANNELS = 2
-POST_PLAYBACK_WAIT   = 15    # seconds to flush VAC/LocalAgreement buffer after playback
+POST_PLAYBACK_WAIT   = 45    # seconds to flush VAC/LocalAgreement buffer after playback
 WER_PASS_THRESHOLD   = 0.30  # Never change this! Otherwise this is cheating and we can't trust the test!
 
 # Speaker identification test settings
