@@ -3,7 +3,7 @@ transcribe/streaming_engine.py — Streaming Whisper engine using LocalAgreement
 
 Wraps whisper_streaming's OnlineASRProcessor / VACOnlineASRProcessor.
 Usage:
-    engine = StreamingEngine(model_name="base.en")
+    engine = StreamingEngine(model_name="small.en")
     engine.init_session()          # called when SSE client connects
     text = engine.process_audio(chunk)   # np.float32, 16 kHz, any size
     engine.finish_session()        # called when SSE client disconnects
@@ -24,7 +24,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "base.en"
+DEFAULT_MODEL = "small.en"
 
 
 def _try_import_doa():
@@ -51,6 +51,85 @@ def _try_import_speaker_registry():
     except Exception:
         return None
 
+
+
+class _DistilWhisperASR:
+    """Distil-Whisper backend using HuggingFace transformers.
+
+    Uses distil-whisper/distil-small.en — ~2x faster than small.en with near-identical WER.
+    Runs on PyTorch CUDA via transformers pipeline (no CTranslate2 required).
+    Word-level timestamps are produced via return_timestamps="word".
+    """
+
+    sep = " "
+
+    def __init__(self, lan, modelsize=None, cache_dir=None, model_dir=None, logfile=sys.stderr):
+        hf_model = model_dir or modelsize or "distil-whisper/distil-small.en"
+        # English-only models (*.en) don't accept task/language in generate_kwargs
+        self._is_english_only = hf_model.endswith(".en")
+        self.original_language = None if (self._is_english_only or lan == "auto") else lan
+        self.transcribe_kargs = {}
+        import torch
+        from transformers import pipeline as hf_pipeline
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "[_DistilWhisperASR] CUDA not available — "
+                "cannot load model (check LD_LIBRARY_PATH and GPU state)"
+            )
+        logger.info("[_DistilWhisperASR] Loading '%s' on cuda...", hf_model)
+        self._pipe = hf_pipeline(
+            "automatic-speech-recognition",
+            model=hf_model,
+            torch_dtype=torch.float16,
+            device="cuda",
+        )
+        logger.info("[_DistilWhisperASR] Model loaded on cuda")
+
+    def transcribe(self, audio, init_prompt=""):
+        generate_kwargs = {}
+        if self.original_language:
+            generate_kwargs["language"] = self.original_language
+        generate_kwargs.update(self.transcribe_kargs)
+        # distil-whisper crashes with return_timestamps="word" (cross-attention
+        # alignment heads mismatch in distilled layers). Chunk-level is fine.
+        result = self._pipe(
+            audio.copy(),
+            return_timestamps=True,
+            generate_kwargs=generate_kwargs,
+        )
+        return result
+
+    def ts_words(self, r):
+        """Convert HuggingFace chunks [{"text":..,"timestamp":(s,e)}] to [(start,end,text)]."""
+        o = []
+        for chunk in r.get("chunks", []):
+            ts = chunk.get("timestamp") or (None, None)
+            start, end = ts
+            if start is None or end is None:
+                continue
+            o.append((start, end, chunk["text"]))
+        return o
+
+    def segments_end_ts(self, res):
+        """Group words into pseudo-segments by silence gaps > 0.5s; return segment end times."""
+        words = self.ts_words(res)
+        if not words:
+            return []
+        segment_ends = []
+        prev_end = words[0][1]
+        for start, end, _ in words[1:]:
+            if start - prev_end > 0.5:
+                segment_ends.append(prev_end)
+            prev_end = end
+        segment_ends.append(prev_end)
+        return segment_ends
+
+    def use_vad(self):
+        pass  # VAC handles VAD externally
+
+    def set_translate_task(self):
+        if not self._is_english_only:
+            self.transcribe_kargs["task"] = "translate"
 
 
 class _OptimizedWhisperTimestampedASR:
@@ -128,6 +207,7 @@ class StreamingEngine:
         self,
         model_name: str = DEFAULT_MODEL,
         language: str = "en",
+        backend: str = "whisper-timestamped",
         use_vac: bool = True,
         chunk_seconds: float = 0.5,
         buffer_trimming_sec: float = 8.0,
@@ -174,8 +254,11 @@ class StreamingEngine:
 
         from whisper_online import OnlineASRProcessor, VACOnlineASRProcessor
 
-        logger.info("[StreamingEngine] Loading model '%s'...", model_name)
-        asr = _OptimizedWhisperTimestampedASR(lan=language, modelsize=model_name)
+        logger.info("[StreamingEngine] Loading model '%s' (backend: %s)...", model_name, backend)
+        if backend == "distil-whisper":
+            asr = _DistilWhisperASR(lan=language, modelsize=model_name)
+        else:
+            asr = _OptimizedWhisperTimestampedASR(lan=language, modelsize=model_name)
 
         buffer_trimming = ("segment", buffer_trimming_sec)
 

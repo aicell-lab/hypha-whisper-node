@@ -36,11 +36,10 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 | Model | Avg latency | Load time |
 |-------|------------|-----------|
 | tiny.en | 0.19 s | 6 s |
-| **base.en** (default) | **0.40 s** | 4 s |
-| small.en | 0.92 s | 26 s |
+| base.en | 0.40 s | 4 s |
+| **small.en** (default) | 0.92 s | 26 s |
 
-`base.en` with `whisper-timestamped` backend (PyTorch + CUDA) is the default. LocalAgreement adds ~3–5 s commit latency but eliminates word-boundary errors.
-
+`small.en` with `whisper-timestamped` backend (PyTorch + CUDA) is the default.
 ---
 
 ## Installation
@@ -110,7 +109,7 @@ Once running, the service exposes three endpoints via Hypha:
 |----------|-------------|
 | `GET /` | Live transcript viewer — open in any browser |
 | `GET /transcript_feed` | SSE stream — one `data: <text>` event per committed phrase |
-| `GET /health` | JSON: `{"status":"ok","model":"base.en","uptime_seconds":123}` |
+| `GET /health` | JSON: `{"status":"ok","model":"small.en","uptime_seconds":123}` |
 
 Full URL pattern:
 ```
@@ -144,7 +143,7 @@ python3 main.py \
   --server https://hypha.aicell.io/ \
   --workspace my-workspace \
   --token my-token \
-  --model base.en \
+  --model small.en \
   --backend whisper-timestamped
 ```
 

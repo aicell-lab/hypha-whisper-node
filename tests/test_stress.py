@@ -226,7 +226,7 @@ def test_30min_continuous_transcription():
     from transcribe.streaming_engine import StreamingEngine
 
     mic = MicCapture()
-    engine = StreamingEngine(model_name="base.en")
+    engine = StreamingEngine(model_name="small.en")
     engine.init_session()
 
     mic.start()

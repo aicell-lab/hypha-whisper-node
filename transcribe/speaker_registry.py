@@ -23,9 +23,9 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DOA_MATCH_DEG    = 50    # diff <= this → same speaker
-DOA_EXCL_DEG     = 60    # diff > this (with trusted DOA) → new speaker
-DOA_MIN_READINGS = 3     # readings needed before a speaker's DOA is trusted
+DOA_MATCH_DEG    = 30    # diff <= this → same speaker
+DOA_EXCL_DEG     = 50    # diff > this (with trusted DOA) → new speaker
+DOA_MIN_READINGS = 1     # readings needed before a speaker's DOA is trusted
 _DOA_HISTORY     = 10    # rolling window for per-speaker DOA median
 
 
@@ -98,14 +98,12 @@ class SpeakerRegistry:
             )
             return sp["label"]
 
-        # Check if all speakers have trusted DOA.
-        all_trusted = all(
-            len(sp["doa_angles"]) >= DOA_MIN_READINGS for sp in self._speakers
-        )
-        if all_trusted and closest_diff > DOA_EXCL_DEG:
+        # Check if the closest speaker has a trusted DOA median.
+        closest_trusted = len(self._speakers[closest_idx]["doa_angles"]) >= DOA_MIN_READINGS
+        if closest_trusted and closest_diff > DOA_EXCL_DEG:
             logger.debug(
-                "[SpeakerRegistry] DOA exclusion: all %d speakers far (closest %.0f° > %d°) → new speaker",
-                len(self._speakers), closest_diff, DOA_EXCL_DEG,
+                "[SpeakerRegistry] DOA exclusion: closest speaker far (%.0f° > %d°) → new speaker",
+                closest_diff, DOA_EXCL_DEG,
             )
             return self._register_new(doa_angle)
 

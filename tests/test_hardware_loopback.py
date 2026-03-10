@@ -279,7 +279,7 @@ def test_acoustic_loopback_wer():
     print(f"[test] Audio duration: {audio_duration:.1f}s")
 
     mic = MicCapture(preferred_mic=MIC_NAME)
-    engine = StreamingEngine(model_name="base.en", use_vac=True,
+    engine = StreamingEngine(model_name="small.en", use_vac=True,
                               enable_doa=False, enable_speaker_id=False)
     engine.init_session()
     mic.start()
@@ -505,7 +505,7 @@ def test_speaker_identification():
     print(f"\n[test] sounddevice output: index={sd_device_idx}")
 
     mic = MicCapture(preferred_mic=MIC_NAME)
-    engine = StreamingEngine(model_name="base.en", use_vac=True,
+    engine = StreamingEngine(model_name="small.en", use_vac=True,
                               enable_doa=True, enable_speaker_id=True)
     engine.init_session()
     mic.start()
@@ -634,7 +634,7 @@ def test_speaker_stability_under_variation():
 
         mic = MicCapture(preferred_mic=MIC_NAME)
         engine = StreamingEngine(
-            model_name="base.en", use_vac=True,
+            model_name="small.en", use_vac=True,
             enable_doa=True, enable_speaker_id=True,
         )
         engine.init_session()

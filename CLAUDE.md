@@ -37,8 +37,8 @@ Build a portable, real-time speech-to-text edge node that:
 ### Phase 3 — Whisper Transcription (streaming)
 - [x] Benchmark Whisper model sizes on Jetson — results (2s audio, GPU):
   - tiny.en:  0.19s avg ✅  (load 6s)
-  - base.en:  0.40s avg ✅  (load 4s)  ← default
-  - small.en: 0.92s avg ✅  (load 26s)
+  - base.en:  0.40s avg ✅  (load 4s)
+  - small.en: 0.92s avg ✅  (load 26s) ← default
 - [x] Vendor `whisper_online.py` + `silero_vad_iterator.py` from ufal/whisper_streaming (commit 6da90b44)
 - [x] Write `transcribe/streaming_engine.py` — StreamingEngine wrapping OnlineASRProcessor (LocalAgreement)
   - Backend: `whisper-timestamped` (uses PyTorch, CUDA on Jetson) — default
@@ -113,7 +113,7 @@ Build a portable, real-time speech-to-text edge node that:
 - [x] Switch to whisper_streaming LocalAgreement — eliminates word-boundary errors
 - [x] `whisper-timestamped` backend uses PyTorch CUDA on Jetson (faster-whisper CTranslate2 has no CUDA pip wheel for aarch64)
 - [x] Add `GET /` live transcript viewer (HTML + SSE `EventSource`, browser-ready)
-- [x] Default model updated to `base.en`
+- [x] Default model updated to `small.en`
 
 ### Phase 8 — ReSpeaker Mic Array Upgrade
 - [x] Procure ReSpeaker Mic Array v2.0
@@ -184,7 +184,7 @@ hypha-whisper-node/
 ## Notes
 
 - Target latency: ~3–5 s commit latency (LocalAgreement; trade-off for accuracy)
-- Whisper model default: `base.en` (0.40 s per inference on Jetson GPU)
+- Whisper model default: `small.en`
 - Backend default: `whisper-timestamped` (PyTorch CUDA); `faster-whisper` runs CPU-only on Jetson
 - Hypha server: configurable via CLI; supports offline mode (transcribe only, no streaming)
 - Current mic: ReSpeaker 4 Mic Array v2.0 (6-ch UAC1.0, 16 kHz, beamformed ch0)
