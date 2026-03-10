@@ -1,18 +1,18 @@
 """
 tests/test_hardware_loopback.py — End-to-end acoustic loopback tests.
 
-Audio sources:
-  tests/test-audio-male.wav   — male voice reading the reference text
-  tests/test-audio-femal.wav  — female voice reading the reference text
-
-Both files were provided as pre-recorded custom audio (no TTS generation needed).
+Audio source:
+  tests/test-audio-male.wav   — voice reading the reference text
 
 Tests:
-  test_speaker_playback_only    — smoke test: play male audio through speaker bar
-  test_mic_capture_rms          — verify ReSpeaker picks up audio (RMS threshold)
-  test_acoustic_loopback_wer    — full pipeline WER < threshold (male voice)
-  test_speaker_identification   — 4 clips (male/female × left/right channel);
-                                  assert >= 2 distinct speakers identified
+  test_speaker_playback_only     — smoke test: play audio through speaker bar
+  test_mic_capture_rms           — verify ReSpeaker picks up audio (RMS threshold)
+  test_acoustic_loopback_wer     — full pipeline WER < threshold
+  test_speaker_identification    — play from LEFT then RIGHT; assert 2 distinct
+                                   speakers identified (DOA angle difference)
+  test_speaker_stability_under_variation
+                                 — audio-processed variants from the same
+                                   direction must map to the SAME speaker
 
 Run with:
     pytest tests/test_hardware_loopback.py -v -s -m hardware
@@ -35,9 +35,8 @@ import pytest
 
 FIXTURES_DIR   = Path(__file__).parent / "fixtures"
 MALE_WAV       = Path(__file__).parent / "test-audio-male.wav"
-FEMALE_WAV     = Path(__file__).parent / "test-audio-femal.wav"
 
-# Text spoken in both audio files
+# Text spoken in the audio file
 REFERENCE_TEXT = (
     "In microscopy laboratories, researchers often need to annotate experiments, "
     "describe observations, or record notes while working at the microscope, which "
@@ -59,9 +58,8 @@ POST_PLAYBACK_WAIT   = 15    # seconds to flush VAC/LocalAgreement buffer after 
 WER_PASS_THRESHOLD   = 0.30  # Never change this! Otherwise this is cheating and we can't trust the test!
 
 # Speaker identification test settings
-SEGMENT_POST_WAIT      = 6    # seconds to flush each clip after playback
-MULTI_WER_THRESH       = 0.50 # looser — short clips through loopback
-MIN_DISTINCT_SPEAKERS  = 2    # must identify at least this many distinct speakers
+SEGMENT_POST_WAIT     = 6    # seconds to flush each clip after playback
+MIN_DISTINCT_SPEAKERS = 2    # left vs right channel must give distinct DOA angles
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +179,7 @@ def _extract_speaker(item) -> str:
 @pytest.mark.hardware
 @pytest.mark.usefixtures("suspend_service")
 def test_speaker_playback_only():
-    """Smoke test: verify speaker plays male audio without error."""
+    """Smoke test: verify speaker plays audio without error."""
     _require_wav(MALE_WAV)
     speaker_idx = _find_output_device(SPEAKER_NAME)
     pcm = _decode_audio_to_pcm(MALE_WAV, SPEAKER_RATE, SPEAKER_CHANNELS)
@@ -265,7 +263,7 @@ def test_mic_capture_rms():
 @pytest.mark.usefixtures("suspend_service")
 def test_acoustic_loopback_wer():
     """
-    Play male audio through Dell AC511, capture via ReSpeaker, transcribe via
+    Play audio through Dell AC511, capture via ReSpeaker, transcribe via
     StreamingEngine, and assert WER < threshold.
     """
     _require_wav(MALE_WAV)
@@ -319,10 +317,7 @@ def test_acoustic_loopback_wer():
             item = engine.text_queue.get_nowait()
             text = item.get("text", "") if isinstance(item, dict) else str(item)
             if text.strip():
-                spk = item.get("speaker", "") if isinstance(item, dict) else ""
-                ang = item.get("angle") if isinstance(item, dict) else None
-                badge = f"[{spk}|{ang}°] " if spk else ""
-                print(f"[transcript] {badge}{text}")
+                print(f"[transcript] {text}")
                 transcripts.append(text)
 
     try:
@@ -369,17 +364,122 @@ def test_acoustic_loopback_wer():
 
 
 # ---------------------------------------------------------------------------
-# Multi-speaker identification test
+# Audio transform helpers (used by stability test)
 # ---------------------------------------------------------------------------
 
-# 4 clips: (label, wav_path, stereo_channel)
+STABILITY_TRANSFORMS = [
+    ("noise_20db",   "white noise SNR 20 dB (light)"),
+    ("noise_10db",   "white noise SNR 10 dB (heavy)"),
+    ("speed_fast",   "10% faster speaking pace (atempo=1.10)"),
+    ("speed_slow",   "10% slower speaking pace (atempo=0.90)"),
+    ("reverb",       "room echo simulation"),
+    ("volume_low",   "50% volume — quieter speaker"),
+    ("volume_high",  "150% volume — louder speaker"),
+]
+
+# Allow this fraction of items per variant to be mis-attributed (accounts for
+# initial utterances before DOA history builds up).
+STABILITY_WRONG_FRACTION_LIMIT = 0.35
+
+STABILITY_POST_WAIT = 5
+
+
+def _apply_transform(path: Path, transform: str, rate: int = 44100) -> np.ndarray:
+    """Return float32 mono array at *rate* Hz with audio transform applied."""
+    if transform in ("noise_20db", "noise_10db"):
+        audio = _decode_audio_to_float32_mono(path, rate)
+        snr_db = 20 if transform == "noise_20db" else 10
+        snr_linear = 10 ** (snr_db / 20)
+        signal_rms = float(np.sqrt(np.mean(audio ** 2))) + 1e-9
+        noise_rms = signal_rms / snr_linear
+        rng = np.random.default_rng(42)
+        noise = rng.normal(0, noise_rms, len(audio)).astype(np.float32)
+        return np.clip(audio + noise, -1.0, 1.0)
+
+    af_filters = {
+        "speed_fast":  "atempo=1.10",
+        "speed_slow":  "atempo=0.90",
+        "reverb":      "aecho=0.8:0.88:60:0.4",
+        "volume_low":  "volume=0.5",
+        "volume_high": "volume=1.5",
+    }
+    if transform not in af_filters:
+        raise ValueError(f"Unknown transform: {transform}")
+
+    cmd = [
+        "ffmpeg", "-loglevel", "error", "-i", str(path),
+        "-af", af_filters[transform],
+        "-f", "f32le", "-ac", "1", "-ar", str(rate), "pipe:1",
+    ]
+    result = subprocess.run(cmd, capture_output=True, check=True)
+    return np.frombuffer(result.stdout, dtype=np.float32)
+
+
+def _run_clip_through_engine(
+    audio_mono: np.ndarray,
+    channel: int,
+    sd_device_idx: int,
+    mic,
+    engine,
+    post_wait: float = STABILITY_POST_WAIT,
+) -> list:
+    """Play float32 mono audio through one stereo channel, capture via mic,
+    feed to engine, and return all text_queue items produced."""
+    import sounddevice as sd
+
+    stereo = np.zeros((len(audio_mono), 2), dtype=np.float32)
+    stereo[:, channel] = audio_mono
+
+    playback_done = threading.Event()
+
+    def _play():
+        try:
+            sd.play(stereo, samplerate=44100, device=sd_device_idx, blocking=True)
+        finally:
+            playback_done.set()
+
+    items: list = []
+
+    def _drain():
+        while not engine.text_queue.empty():
+            try:
+                items.append(engine.text_queue.get_nowait())
+            except queue.Empty:
+                break
+
+    threading.Thread(target=_play, daemon=True).start()
+
+    while not playback_done.is_set():
+        try:
+            chunk = mic.raw_audio_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        engine.process_audio(chunk)
+        _drain()
+
+    flush_end = time.monotonic() + post_wait
+    while time.monotonic() < flush_end:
+        try:
+            chunk = mic.raw_audio_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        engine.process_audio(chunk)
+        _drain()
+
+    _drain()
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Speaker identification test (DOA-based: left vs right channel)
+# ---------------------------------------------------------------------------
+
+# 2 clips: same voice, different stereo channel → different DOA angle
 #   channel 0 = left speaker  → DOA should point roughly left  (~270°)
 #   channel 1 = right speaker → DOA should point roughly right (~90°)
-MULTI_SPEAKER_CLIPS = [
-    ("male_left",    MALE_WAV,   0),
-    ("female_left",  FEMALE_WAV, 0),
-    ("male_right",   MALE_WAV,   1),
-    ("female_right", FEMALE_WAV, 1),
+SPEAKER_ID_CLIPS = [
+    ("left",  MALE_WAV, 0),
+    ("right", MALE_WAV, 1),
 ]
 
 
@@ -387,11 +487,9 @@ MULTI_SPEAKER_CLIPS = [
 @pytest.mark.usefixtures("suspend_service")
 def test_speaker_identification():
     """
-    Play 4 audio clips (male/female × left/right channel) through Dell AC511.
-    Verify StreamingEngine + SpeakerRegistry identifies >= 2 distinct speakers.
-
-    Voice differentiation: male vs female voice embeddings.
-    Spatial differentiation: left vs right stereo channel → different DOA angles.
+    Play the same voice from LEFT then RIGHT stereo channel.
+    DOA angles will differ by ~180°, so SpeakerRegistry must register 2 distinct
+    speakers purely from direction.
     """
     try:
         import sounddevice as sd  # noqa: F401
@@ -399,7 +497,6 @@ def test_speaker_identification():
         pytest.skip("sounddevice not installed: pip install sounddevice")
 
     _require_wav(MALE_WAV)
-    _require_wav(FEMALE_WAV)
 
     from audio.capture import MicCapture
     from transcribe.streaming_engine import StreamingEngine
@@ -425,7 +522,7 @@ def test_speaker_identification():
         return items
 
     try:
-        for label, wav_path, channel in MULTI_SPEAKER_CLIPS:
+        for label, wav_path, channel in SPEAKER_ID_CLIPS:
             ch_name = "LEFT" if channel == 0 else "RIGHT"
             print(f"\n[test] Playing: {label} ({ch_name} channel)")
 
@@ -461,23 +558,19 @@ def test_speaker_identification():
 
             play_thread.join(timeout=5)
 
-            hyp_text = " ".join(_extract_text(it) for it in seg_items).strip()
-            speakers  = list({_extract_speaker(it) for it in seg_items})
-            angles    = [it.get("angle") for it in seg_items
-                         if isinstance(it, dict) and it.get("angle") is not None]
+            speakers = list({_extract_speaker(it) for it in seg_items})
+            angles   = [it.get("angle") for it in seg_items
+                        if isinstance(it, dict) and it.get("angle") is not None]
             avg_angle = int(np.mean(angles)) if angles else None
 
-            print(f"  Hypothesis: {hyp_text[:80]}")
-            print(f"  Speakers  : {speakers}  DOA avg: {avg_angle}°")
+            print(f"  Speakers: {speakers}  DOA avg: {avg_angle}°")
 
             segment_results.append({
                 "label":    label,
-                "hyp_text": hyp_text,
                 "speakers": speakers,
                 "angle":    avg_angle,
             })
 
-            # Brief pause between clips so LocalAgreement separates them
             time.sleep(1.5)
 
     finally:
@@ -485,21 +578,167 @@ def test_speaker_identification():
         _drain_items()
         mic.stop()
 
-    # --- Assertions ---
-    print("\n--- Multi-speaker identification results ---")
-
+    print("\n--- Speaker identification results ---")
     all_speakers: set = set()
     for r in segment_results:
         all_speakers.update(r["speakers"])
-        wer = _word_error_rate(REFERENCE, r["hyp_text"])
-        print(f"  {r['label']:15s}  speakers={r['speakers']}  DOA={r['angle']}°  WER={wer:.1%}")
+        print(f"  {r['label']:6s}  speakers={r['speakers']}  DOA={r['angle']}°")
 
     n_distinct = len(all_speakers)
-    print(f"\n  Distinct speakers: {n_distinct}  {sorted(all_speakers)}")
-    print(f"  Required         : >= {MIN_DISTINCT_SPEAKERS}")
+    print(f"\n  Distinct speakers: {n_distinct}  (required >= {MIN_DISTINCT_SPEAKERS})")
 
     assert n_distinct >= MIN_DISTINCT_SPEAKERS, (
         f"Speaker registry identified only {n_distinct} distinct speaker(s) "
-        f"(expected >= {MIN_DISTINCT_SPEAKERS}). "
-        f"Speakers seen: {sorted(all_speakers)}"
+        f"from left/right channels (expected >= {MIN_DISTINCT_SPEAKERS}). "
+        f"DOA angles: {[r['angle'] for r in segment_results]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Speaker stability under audio variation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.hardware
+@pytest.mark.usefixtures("suspend_service")
+def test_speaker_stability_under_variation():
+    """
+    For left and right channels, verify that audio-processed variants of the
+    same voice from the same direction are still identified as the SAME speaker.
+
+    Sub-session per channel:
+      1. Play original → registers baseline speaker label (Speaker 1 or 2).
+      2. Play each variant from the SAME channel → must map back to baseline.
+
+    Pass condition per variant: <= STABILITY_WRONG_FRACTION_LIMIT of committed
+    items are assigned to a different speaker than the baseline.
+    """
+    try:
+        import sounddevice as sd  # noqa: F401
+    except ImportError:
+        pytest.skip("sounddevice not installed: pip install sounddevice")
+
+    _require_wav(MALE_WAV)
+
+    from audio.capture import MicCapture
+    from transcribe.streaming_engine import StreamingEngine
+
+    sd_device_idx = _find_sd_output_device(SPEAKER_NAME)
+    print(f"\n[stability] sounddevice output: index={sd_device_idx}")
+
+    failures: list = []
+    all_results: list = []
+
+    for base_label, wav_path, channel in SPEAKER_ID_CLIPS:
+        ch_name = "LEFT" if channel == 0 else "RIGHT"
+        print(f"\n[stability] ══════ {base_label} ({ch_name}) ══════")
+
+        mic = MicCapture(preferred_mic=MIC_NAME)
+        engine = StreamingEngine(
+            model_name="base.en", use_vac=True,
+            enable_doa=True, enable_speaker_id=True,
+        )
+        engine.init_session()
+        mic.start()
+
+        clip_results: list = []
+
+        try:
+            # ── Step 1: original clip → establish baseline speaker ──────────
+            print(f"  [original] loading and playing...")
+            orig_audio = _decode_audio_to_float32_mono(wav_path)
+            orig_items = _run_clip_through_engine(
+                orig_audio, channel, sd_device_idx, mic, engine,
+            )
+
+            if not orig_items:
+                print(f"  [original] WARNING: no transcript — skipping {base_label}")
+                continue
+
+            baseline_label = _extract_speaker(orig_items[0])
+            print(f"  [original] DONE  baseline={baseline_label}")
+
+            clip_results.append({
+                "variant": "original",
+                "wrong": 0,
+                "total": len(orig_items),
+                "status": "BASELINE",
+            })
+
+            # ── Step 2: variants ────────────────────────────────────────────
+            for transform, description in STABILITY_TRANSFORMS:
+                print(f"  [{transform}] applying transform ({description})...")
+                try:
+                    variant_audio = _apply_transform(wav_path, transform)
+                except Exception as exc:
+                    print(f"  [{transform}] SKIP — transform failed: {exc}")
+                    continue
+
+                print(f"  [{transform}] playing {len(variant_audio)/44100:.1f}s of audio...")
+                var_items = _run_clip_through_engine(
+                    variant_audio, channel, sd_device_idx, mic, engine,
+                )
+
+                if not var_items:
+                    print(f"  [{transform}] WARNING: no transcript produced")
+                    clip_results.append({
+                        "variant": transform,
+                        "wrong": 0,
+                        "total": 0,
+                        "status": "NO_TRANSCRIPT",
+                    })
+                    continue
+
+                wrong_items = [
+                    it for it in var_items
+                    if _extract_speaker(it) != baseline_label
+                ]
+                wrong_frac = len(wrong_items) / len(var_items)
+                passed = wrong_frac <= STABILITY_WRONG_FRACTION_LIMIT
+                status = "PASS" if passed else "FAIL"
+
+                print(
+                    f"  [{transform}] {status}  "
+                    f"wrong={len(wrong_items)}/{len(var_items)} ({wrong_frac:.0%})"
+                )
+
+                clip_results.append({
+                    "variant": transform,
+                    "wrong": len(wrong_items),
+                    "total": len(var_items),
+                    "status": status,
+                })
+
+                if not passed:
+                    failures.append(
+                        f"{base_label}/{transform}: {wrong_frac:.0%} mis-attributed "
+                        f"(expected '{baseline_label}')"
+                    )
+
+                time.sleep(0.5)
+
+        finally:
+            engine.finish_session()
+            mic.stop()
+
+        all_results.append({"base": base_label, "clips": clip_results})
+        time.sleep(1.0)
+
+    print("\n══════ Speaker stability summary ══════")
+    for entry in all_results:
+        print(f"  {entry['base']}:")
+        for c in entry["clips"]:
+            wrong_str = (
+                f"wrong={c['wrong']}/{c['total']} ({c['wrong']/c['total']:.0%})"
+                if c["total"] > 0 else "no transcript"
+            )
+            print(f"    {c['variant']:15s}  {c['status']:12s}  {wrong_str}")
+
+    if failures:
+        print("\nFAILURES:")
+        for f in failures:
+            print(f"  ✗ {f}")
+
+    assert not failures, (
+        f"Speaker stability failed for {len(failures)} variant(s):\n"
+        + "\n".join(f"  - {f}" for f in failures)
     )

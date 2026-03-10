@@ -53,6 +53,16 @@ _start_time: float = 0.0
 # _broadcast_loop() drains _text_queue and copies each item to all subscribers.
 _subscribers: set = set()
 _broadcast_task = None
+_CLEAR_SENTINEL = {"_clear": True}
+
+
+def _push_to_subscribers(item) -> None:
+    """Put item into all current subscriber queues (thread-safe via put_nowait)."""
+    for q in list(_subscribers):
+        try:
+            q.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
 
 app = FastAPI()
 
@@ -161,7 +171,7 @@ async def live_transcript_page():
   </header>
   <div id="transcript-box"></div>
   <footer>
-    <button onclick="document.getElementById('transcript-box').textContent=''">Clear</button>
+    <button onclick="clearSession()">Clear</button>
   </footer>
   <script>
     const box    = document.getElementById('transcript-box');
@@ -234,6 +244,18 @@ async def live_transcript_page():
       lastTextSpan = span;
     }
 
+    function clearDisplay() {
+      box.textContent = '';
+      lastSpeaker = null;
+      lastTextSpan = null;
+      for (const k of Object.keys(speakerColors)) delete speakerColors[k];
+      speakerCount = 0;
+    }
+
+    function clearSession() {
+      fetch('clear', {method: 'POST'});
+    }
+
     function connect() {
       const src = new EventSource('transcript_feed');
 
@@ -245,6 +267,10 @@ async def live_transcript_page():
       src.onmessage = (e) => {
         appendSegment(e.data);
       };
+
+      src.addEventListener('clear', () => {
+        clearDisplay();
+      });
 
       src.onerror = () => {
         status.textContent = 'Disconnected — retrying…';
@@ -316,14 +342,21 @@ async def transcript_feed():
             while True:
                 try:
                     item = await asyncio.wait_for(client_q.get(), timeout=15.0)
-                    yield f"data: {_item_to_json(item)}\n\n"
+                    if isinstance(item, dict) and item.get("_clear"):
+                        yield "event: clear\ndata: {}\n\n"
+                    else:
+                        yield f"data: {_item_to_json(item)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
         except Exception as exc:
             logger.error("[transcript_feed] SSE generator error: %s", exc, exc_info=True)
         finally:
             _subscribers.discard(client_q)
-            logger.info("[transcript_feed] Client disconnected (%d remaining)", len(_subscribers))
+            remaining = len(_subscribers)
+            logger.info("[transcript_feed] Client disconnected (%d remaining)", remaining)
+            if remaining == 0 and _engine is not None:
+                _engine.init_session()
+                logger.info("[transcript_feed] Last client disconnected — engine session reset")
 
     return StreamingResponse(sse_gen(), media_type="text/event-stream")
 
@@ -335,6 +368,16 @@ async def health():
         "model": getattr(_engine, "model_name", "unknown"),
         "uptime_seconds": round(time.time() - _start_time),
     }
+
+
+@app.post("/clear")
+async def clear_session():
+    """Reset the engine session state and notify all SSE clients to clear their display."""
+    if _engine is not None:
+        _engine.init_session()
+        logger.info("[clear] Engine session reset via /clear")
+    _push_to_subscribers(_CLEAR_SENTINEL)
+    return {"status": "cleared"}
 
 
 def _sd_notify(msg: str) -> None:

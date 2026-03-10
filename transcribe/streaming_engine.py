@@ -13,7 +13,6 @@ when DOAReader / SpeakerRegistry are available, otherwise plain str for
 backwards compatibility.
 """
 
-import concurrent.futures
 import logging
 import queue
 import sys
@@ -162,16 +161,7 @@ class StreamingEngine:
                     logger.warning("[StreamingEngine] SpeakerRegistry init failed: %s", exc)
                     self._speaker_registry = None
 
-        # Audio accumulator for speaker embedding (collects audio between commits)
-        self._audio_since_last_commit: list = []
         self._last_commit_time: float = 0.0
-
-        # Thread pool for async speaker identification (1 worker to avoid concurrent CUDA calls)
-        self._speaker_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        if self._speaker_registry is not None:
-            self._speaker_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="speaker-id"
-            )
 
         # Add transcribe/ to sys.path so whisper_online.py can be imported
         _here = os.path.dirname(__file__)
@@ -240,7 +230,6 @@ class StreamingEngine:
             except queue.Empty:
                 break
         self._online.init()
-        self._audio_since_last_commit = []
         self._last_commit_time = time.monotonic()
         if self._speaker_registry is not None:
             self._speaker_registry.reset()
@@ -272,10 +261,7 @@ class StreamingEngine:
                 begin, end, text = self._online.online.process_iter()
                 text = text.strip() if text else ""
                 if text:
-                    audio_snapshot = list(self._audio_since_last_commit)
-                    self._audio_since_last_commit = []
-                    commit_time = self._last_commit_time
-                    self._emit_item_async(text, audio_snapshot, commit_time)
+                    self._emit_item(text, self._last_commit_time)
                     logger.info("[StreamingEngine] Pre-flush committed: %r", text)
         except Exception as exc:
             logger.warning("[StreamingEngine] pre-flush process_iter raised: %s", exc)
@@ -287,19 +273,8 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
-            audio_snapshot = list(self._audio_since_last_commit)
-            self._audio_since_last_commit = []
-            commit_time = self._last_commit_time
-            self._emit_item_async(text, audio_snapshot, commit_time)
+            self._emit_item(text, self._last_commit_time)
             logger.info("[StreamingEngine] Flushed final: %r", text)
-
-        # Wait for any in-flight speaker ID tasks to complete and push their items
-        if self._speaker_executor is not None:
-            self._speaker_executor.shutdown(wait=True, cancel_futures=False)
-            # Re-create executor for next session
-            self._speaker_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="speaker-id"
-            )
 
         return text if text else None
 
@@ -315,9 +290,6 @@ class StreamingEngine:
         Returns:
             Committed text string, or None if nothing committed yet.
         """
-        # Accumulate audio for speaker embedding
-        self._audio_since_last_commit.append(chunk)
-
         self._online.insert_audio_chunk(chunk)
         try:
             begin, end, text = self._online.process_iter()
@@ -326,52 +298,29 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
-            # Snapshot audio buffer and reset before async embedding so subsequent
-            # audio is not included in this segment's embedding.
-            audio_snapshot = list(self._audio_since_last_commit)
-            self._audio_since_last_commit = []
             commit_time = self._last_commit_time
             self._last_commit_time = time.monotonic()
-
-            self._emit_item_async(text, audio_snapshot, commit_time)
+            self._emit_item(text, commit_time)
             logger.debug("[StreamingEngine] Committed [%.2f–%.2f]: %r", begin or 0, end or 0, text)
             return text
         return None
-
-    def _emit_item_async(self, text: str, audio_snapshot: list, commit_time: float) -> None:
-        """Identify speaker asynchronously and push item to text_queue when done."""
-        if self._speaker_executor is None:
-            # No speaker ID — emit immediately with defaults
-            self.text_queue.put(self._build_item_sync(text, audio_snapshot, commit_time))
-            return
-
-        def _task():
-            item = self._build_item_sync(text, audio_snapshot, commit_time)
-            self.text_queue.put(item)
-
-        self._speaker_executor.submit(_task)
 
     # ------------------------------------------------------------------
     # Speaker identification helpers
     # ------------------------------------------------------------------
 
-    def _build_item_sync(self, text: str, audio_snapshot: list, commit_time: float) -> dict:
-        """Build a text_queue item with optional speaker ID and DOA angle.
-
-        This may block for embedding computation — runs in the speaker-id
-        thread pool when speaker identification is enabled.
-        """
-        speaker = "Speaker 1"
+    def _emit_item(self, text: str, commit_time: float) -> None:
+        """Build and enqueue a text_queue item with DOA-based speaker ID."""
         angle: Optional[int] = None
+        speaker = "Speaker 1"
 
         if self._doa is not None and self._doa.enabled:
             angle = self._doa.median_angle_since(commit_time)
 
         if self._speaker_registry is not None:
-            audio_buf = np.concatenate(audio_snapshot) if audio_snapshot else np.zeros(0, dtype=np.float32)
             try:
-                speaker = self._speaker_registry.identify(audio_buf, sample_rate=16000, doa_angle=angle)
+                speaker = self._speaker_registry.identify(doa_angle=angle)
             except Exception as exc:
                 logger.warning("[StreamingEngine] Speaker identify error: %s", exc)
 
-        return {"text": text, "speaker": speaker, "angle": angle}
+        self.text_queue.put({"text": text, "speaker": speaker, "angle": angle})

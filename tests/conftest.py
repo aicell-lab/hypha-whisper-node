@@ -25,12 +25,15 @@ def _service_is_active() -> bool:
 
 
 def _sudo_passwordless() -> bool:
-    """Return True if sudo systemctl can run without a password prompt."""
+    """Return True if sudo systemctl stop/start can run without a password prompt.
+
+    NOTE: The sudoers rule only allows 'stop' and 'start', not 'is-active',
+    so we test with 'stop' (idempotent — stopping an already-stopped service is safe).
+    """
     result = subprocess.run(
-        ["sudo", "-n", "systemctl", "is-active", "hypha-whisper"],
+        ["sudo", "-n", "systemctl", "stop", "hypha-whisper"],
         capture_output=True,
     )
-    # returncode 1 = inactive (ok), 3 = unknown (ok) — but not "sudo: a password is required"
     return b"password" not in result.stderr
 
 
