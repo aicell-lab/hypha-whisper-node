@@ -1,32 +1,26 @@
 """
-transcribe/speaker_registry.py — DOA-only speaker identification.
+transcribe/speaker_registry.py — Direction-based speaker identification.
 
 Uses the ReSpeaker USB DOA angle to track speakers within a session.
 No voice embeddings — purely directional.
 
 Algorithm:
-  1. First utterance → register Speaker 1.
-  2. Find the existing speaker with the smallest angular distance to the
-     current DOA angle.
-  3. If closest diff <= DOA_MATCH_DEG: assign to that speaker.
-  4. If closest diff > DOA_EXCL_DEG AND all known speakers have trusted DOA
-     (>= DOA_MIN_READINGS): register a new speaker from a distinct direction.
-  5. Otherwise (ambiguous / no trusted DOA yet): assign to closest.
+  1. First utterance → register first speaker at that angle.
+  2. Find the existing speaker with the smallest angular distance.
+  3. If diff <= DOA_MATCH_DEG: same speaker; continue.
+  4. If diff > DOA_MATCH_DEG: new speaker at the new angle.
 
-If DOA is unavailable (angle=None): always assign to the last active speaker.
+Labels are the direction angle, e.g. "45°".
+
+If DOA is unavailable (angle=None): assign to last active speaker.
 """
 
 import logging
 from typing import Optional
 
-import numpy as np
-
 logger = logging.getLogger(__name__)
 
-DOA_MATCH_DEG    = 30    # diff <= this → same speaker
-DOA_EXCL_DEG     = 50    # diff > this (with trusted DOA) → new speaker
-DOA_MIN_READINGS = 1     # readings needed before a speaker's DOA is trusted
-_DOA_HISTORY     = 10    # rolling window for per-speaker DOA median
+DOA_MATCH_DEG = 60  # angular diff <= this → same speaker
 
 
 class SpeakerRegistry:
@@ -39,7 +33,7 @@ class SpeakerRegistry:
     """
 
     def __init__(self):
-        # List of dicts: {label, doa_angles, doa_median}
+        # List of dicts: {label, angle}
         self._speakers: list = []
         self._last_label: Optional[str] = None
 
@@ -61,82 +55,43 @@ class SpeakerRegistry:
             doa_angle: DOA angle in degrees [0, 359] or None.
 
         Returns:
-            Speaker label string, e.g. "Speaker 1".
+            Speaker label string, e.g. "45°".
         """
         if doa_angle is None:
-            # No DOA — return last active speaker or default
-            return self._last_label or self._register_new(None)
+            return self._last_label or "?"
 
         if not self._speakers:
             label = self._register_new(doa_angle)
             self._last_label = label
             return label
 
-        label = self._match_or_register(doa_angle)
+        # Find existing speaker with smallest angular distance.
+        closest_idx, closest_diff = min(
+            ((i, _angle_diff(doa_angle, sp["angle"])) for i, sp in enumerate(self._speakers)),
+            key=lambda x: x[1],
+        )
+
+        if closest_diff <= DOA_MATCH_DEG:
+            label = self._speakers[closest_idx]["label"]
+            logger.debug("[SpeakerRegistry] match: %s (diff=%.0f°)", label, closest_diff)
+        else:
+            label = self._register_new(doa_angle)
+            logger.debug(
+                "[SpeakerRegistry] new speaker at %d° (closest diff=%.0f° > %d°)",
+                doa_angle, closest_diff, DOA_MATCH_DEG,
+            )
+
         self._last_label = label
         return label
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _match_or_register(self, doa_angle: int) -> str:
-        # Find closest speaker by angular distance.
-        distances = [
-            (idx, _angle_diff(doa_angle, sp["doa_median"]))
-            for idx, sp in enumerate(self._speakers)
-        ]
-        distances.sort(key=lambda x: x[1])
-        closest_idx, closest_diff = distances[0]
-
-        if closest_diff <= DOA_MATCH_DEG:
-            self._update_doa(closest_idx, doa_angle)
-            sp = self._speakers[closest_idx]
-            logger.debug(
-                "[SpeakerRegistry] DOA match: %s (diff=%.0f°)",
-                sp["label"], closest_diff,
-            )
-            return sp["label"]
-
-        # Check if the closest speaker has a trusted DOA median.
-        closest_trusted = len(self._speakers[closest_idx]["doa_angles"]) >= DOA_MIN_READINGS
-        if closest_trusted and closest_diff > DOA_EXCL_DEG:
-            logger.debug(
-                "[SpeakerRegistry] DOA exclusion: closest speaker far (%.0f° > %d°) → new speaker",
-                closest_diff, DOA_EXCL_DEG,
-            )
-            return self._register_new(doa_angle)
-
-        # Ambiguous zone or not enough history — assign to closest.
-        self._update_doa(closest_idx, doa_angle)
-        sp = self._speakers[closest_idx]
-        logger.debug(
-            "[SpeakerRegistry] Ambiguous DOA (diff=%.0f°) — assigned to closest %s",
-            closest_diff, sp["label"],
-        )
-        return sp["label"]
-
-    def _register_new(self, doa_angle: Optional[int]) -> str:
-        n = len(self._speakers) + 1
-        label = f"Speaker {n}"
-        entry = {
-            "label": label,
-            "doa_angles": [doa_angle] if doa_angle is not None else [],
-            "doa_median": doa_angle if doa_angle is not None else 0,
-        }
-        self._speakers.append(entry)
+    def _register_new(self, doa_angle: int) -> str:
+        label = f"{doa_angle}°"
+        self._speakers.append({"label": label, "angle": doa_angle})
         logger.info(
-            "[SpeakerRegistry] Registered %s (DOA=%s, total=%d)",
-            label, doa_angle, len(self._speakers),
+            "[SpeakerRegistry] Registered %s (total=%d)",
+            label, len(self._speakers),
         )
         return label
-
-    def _update_doa(self, idx: int, doa_angle: int) -> None:
-        entry = self._speakers[idx]
-        entry["doa_angles"].append(doa_angle)
-        if len(entry["doa_angles"]) > _DOA_HISTORY:
-            entry["doa_angles"] = entry["doa_angles"][-_DOA_HISTORY:]
-        entry["doa_median"] = int(np.median(entry["doa_angles"]))
 
     def speaker_count(self) -> int:
         return len(self._speakers)

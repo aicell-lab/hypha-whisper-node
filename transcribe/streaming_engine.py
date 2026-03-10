@@ -395,7 +395,7 @@ class StreamingEngine:
     def _emit_item(self, text: str, commit_time: float) -> None:
         """Build and enqueue a text_queue item with DOA-based speaker ID."""
         angle: Optional[int] = None
-        speaker = "Speaker 1"
+        speaker = ""
 
         if self._doa is not None and self._doa.enabled:
             angle = self._doa.median_angle_since(commit_time)

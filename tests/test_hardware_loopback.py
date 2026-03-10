@@ -168,8 +168,8 @@ def _extract_text(item) -> str:
 
 def _extract_speaker(item) -> str:
     if isinstance(item, dict):
-        return item.get("speaker", "Speaker 1")
-    return "Speaker 1"
+        return item.get("speaker", "?")
+    return "?"
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +606,7 @@ def test_speaker_stability_under_variation():
     same voice from the same direction are still identified as the SAME speaker.
 
     Sub-session per channel:
-      1. Play original → registers baseline speaker label (Speaker 1 or 2).
+      1. Play original → registers baseline speaker label (angle, e.g. "45°").
       2. Play each variant from the SAME channel → must map back to baseline.
 
     Pass condition per variant: <= STABILITY_WRONG_FRACTION_LIMIT of committed
