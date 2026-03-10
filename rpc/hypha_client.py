@@ -183,6 +183,9 @@ async def live_transcript_page():
       return speakerColors[label];
     }
 
+    let lastSpeaker = null;
+    let lastTextSpan = null;
+
     function appendSegment(data) {
       let text, speaker, angle;
       try {
@@ -198,6 +201,14 @@ async def live_transcript_page():
       }
       if (!text.trim()) return;
 
+      // If same speaker as last segment, just append text inline
+      if (speaker && speaker === lastSpeaker && lastTextSpan) {
+        lastTextSpan.textContent += ' ' + text.trim();
+        box.scrollTop = box.scrollHeight;
+        return;
+      }
+
+      // New speaker (or no speaker) — start a new segment line
       const seg = document.createElement('div');
       seg.className = 'segment';
 
@@ -207,7 +218,7 @@ async def live_transcript_page():
         badge.className = 'badge';
         badge.style.color = fg;
         badge.style.background = bg;
-        badge.textContent = angle ? `${speaker} | ${angle}` : speaker;
+        badge.textContent = speaker;
         seg.appendChild(badge);
       }
 
@@ -218,6 +229,9 @@ async def live_transcript_page():
 
       box.appendChild(seg);
       box.scrollTop = box.scrollHeight;
+
+      lastSpeaker = speaker || null;
+      lastTextSpan = span;
     }
 
     function connect() {
