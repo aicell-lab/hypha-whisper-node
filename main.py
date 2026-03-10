@@ -160,6 +160,10 @@ async def main():
     # Hypha RPC or offline mode
     # ------------------------------------------------------------------
     if args.server:
+        # Prime the session once here so the engine is ready before any client
+        # connects.  Session lifecycle is no longer tied to individual SSE
+        # client connect/disconnect events.
+        engine.init_session()
         from rpc.hypha_client import HyphaClient
         client = HyphaClient(
             server_url=args.server,

@@ -4,8 +4,12 @@ rpc/hypha_client.py — Hypha ASGI service for the Jetson Whisper node.
 Registers a FastAPI ASGI service on Hypha that exposes:
   GET /transcript_feed  — SSE stream: streaming Whisper (LocalAgreement)
                           pushes committed transcript segments as SSE events.
-                          On connect: session state is reset (fresh transcript).
-                          On disconnect: final audio context is flushed.
+                          Multiple simultaneous clients are supported — each
+                          receives its own copy of every transcript item via
+                          per-client asyncio queues fanned out from a single
+                          background broadcast loop.
+                          Session lifecycle (init/finish) is managed by
+                          main.py at startup/shutdown, not per-client.
   GET /health           — JSON status dict
 
 Environment variables (set in /etc/hypha-whisper/config.env):
@@ -43,6 +47,12 @@ _RECONNECT_MAX_WAIT = 60  # seconds
 _engine = None
 _text_queue = None
 _start_time: float = 0.0
+
+# Multi-client fan-out state.
+# Each connected SSE client gets its own asyncio.Queue in _subscribers.
+# _broadcast_loop() drains _text_queue and copies each item to all subscribers.
+_subscribers: set = set()
+_broadcast_task = None
 
 app = FastAPI()
 
@@ -236,60 +246,70 @@ async def live_transcript_page():
 </html>""")
 
 
+async def _broadcast_loop():
+    """Background task: drain the engine's text_queue and fan out to all SSE clients."""
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            item = await asyncio.wait_for(
+                loop.run_in_executor(None, _text_queue.get, True, 0.5),
+                timeout=15.0,
+            )
+            payload = _item_to_json(item)
+            logger.info("[transcript] %s", payload)
+            for q in list(_subscribers):
+                try:
+                    q.put_nowait(item)
+                except asyncio.QueueFull:
+                    logger.warning("[broadcast] Client queue full — dropping item")
+        except (asyncio.TimeoutError, queue.Empty):
+            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("[broadcast_loop] Unexpected error: %s", exc, exc_info=True)
+
+
+def _ensure_broadcast_loop():
+    """Start _broadcast_loop as a background task if not already running."""
+    global _broadcast_task
+    if _broadcast_task is None or _broadcast_task.done():
+        _broadcast_task = asyncio.get_event_loop().create_task(_broadcast_loop())
+
+
 @app.get("/transcript_feed")
 async def transcript_feed():
     """
     SSE endpoint: streams committed transcript segments from the streaming engine.
 
     Each segment arrives as:
-        data: <text>\\n\\n
+        data: <json>\\n\\n
 
     A keep-alive comment is sent every ~15 s when there is no committed text,
     so proxies and browsers do not close an idle connection.
 
-    On connect: streaming state is reset (LocalAgreement buffer cleared).
-    On disconnect: remaining audio context is flushed and final text emitted.
+    Multiple simultaneous clients are supported. Each client gets its own
+    asyncio.Queue; the background _broadcast_loop fans out every transcript
+    item to all connected clients. Session lifecycle (init/finish) is managed
+    by main.py and is not affected by client connect/disconnect.
     """
     async def sse_gen():
-        loop = asyncio.get_event_loop()
-        # On connect: drain stale text from previous session, reset state.
-        while not _text_queue.empty():
-            try:
-                _text_queue.get_nowait()
-            except queue.Empty:
-                break
-        await loop.run_in_executor(None, _engine.init_session)
-        logger.info("[transcript_feed] Client connected — session initialised")
+        client_q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        _subscribers.add(client_q)
+        _ensure_broadcast_loop()
+        logger.info("[transcript_feed] Client connected (%d total)", len(_subscribers))
         try:
             while True:
                 try:
-                    item = await asyncio.wait_for(
-                        loop.run_in_executor(None, _text_queue.get, True, 0.5),
-                        timeout=15.0,
-                    )
-                    payload = _item_to_json(item)
-                    logger.info("[transcript] %s", payload)
-                    yield f"data: {payload}\n\n"
-                except (asyncio.TimeoutError, queue.Empty):
-                    # queue.Empty propagates from run_in_executor when the
-                    # 0.5s blocking timeout expires — treat as keep-alive.
+                    item = await asyncio.wait_for(client_q.get(), timeout=15.0)
+                    yield f"data: {_item_to_json(item)}\n\n"
+                except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
         except Exception as exc:
             logger.error("[transcript_feed] SSE generator error: %s", exc, exc_info=True)
         finally:
-            # Flush remaining audio context and emit any final text.
-            final = await loop.run_in_executor(None, _engine.finish_session)
-            if final:
-                logger.info("[transcript] (final) %s", final)
-                payload = _item_to_json(final)
-                yield f"data: {payload}\n\n"
-            # Drain any leftover text so next connection starts fresh.
-            while not _text_queue.empty():
-                try:
-                    _text_queue.get_nowait()
-                except queue.Empty:
-                    break
-            logger.info("[transcript_feed] Client disconnected — session finished")
+            _subscribers.discard(client_q)
+            logger.info("[transcript_feed] Client disconnected (%d remaining)", len(_subscribers))
 
     return StreamingResponse(sse_gen(), media_type="text/event-stream")
 
@@ -331,7 +351,7 @@ class HyphaClient:
 
     def __init__(self, server_url: str, token: str, streaming_engine,
                  workspace: str = ""):
-        global _engine, _text_queue, _start_time
+        global _engine, _text_queue, _start_time, _subscribers, _broadcast_task
         self.server_url = server_url.rstrip("/")
         self.workspace = workspace
         self.token = token
@@ -339,6 +359,12 @@ class HyphaClient:
         _text_queue = streaming_engine.text_queue
         _start_time = time.time()
         self._server = None
+        # Reset fan-out state so each HyphaClient instance starts clean
+        # (important for test isolation and reconnects).
+        _subscribers = set()
+        if _broadcast_task is not None and not _broadcast_task.done():
+            _broadcast_task.cancel()
+        _broadcast_task = None
 
     # ------------------------------------------------------------------
     # Public entry point

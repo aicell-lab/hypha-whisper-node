@@ -77,23 +77,23 @@ def _parse_gpu_percent(tegrastats_line: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
-async def test_sustained_pipeline_ci(tone_f32):
+async def test_sustained_pipeline_ci():
     """
-    CI comprehensive stress test (~60–120 s):
-      - 15 synthetic audio chunks fed through real WhisperEngine (tiny.en)
+    CI end-to-end pipeline stress test:
+      - MockAutoEmitEngine emits one transcript segment per process_audio() call
+      - Audio loop feeds N chunks through the engine (no GPU needed)
       - Service registered on hypha.aicell.io via hypha-rpc
-      - Client reads 15 SSE events from the live /transcript_feed URL
-      - Tracks per-event latency and CPU/RAM throughout
+      - SSE client collects N data: events and measures per-event latency
+      - Tracks CPU / RAM throughout
 
-    No physical hardware required — runs on any machine with network access
-    and HYPHA_WORKSPACE_TOKEN set.
+    No physical hardware or GPU required — runs on any machine with network
+    access and HYPHA_WORKSPACE_TOKEN set.
     """
     import os
     import uuid
+    import queue as queue_mod
     import httpx
     import rpc.hypha_client as _hc_module
-    from tests.conftest import MockMicCapture
-    from transcribe.whisper_engine import WhisperEngine
     from rpc.hypha_client import HyphaClient
 
     token = os.environ.get("HYPHA_WORKSPACE_TOKEN", "")
@@ -102,23 +102,39 @@ async def test_sustained_pipeline_ci(tone_f32):
         pytest.skip("HYPHA_WORKSPACE_TOKEN not set")
 
     N_CHUNKS = 15
-    MAX_EVENT_LATENCY_S = 10.0   # generous for CPU-only CI runners
+    MAX_EVENT_LATENCY_S = 10.0
+
+    # Engine that emits one transcript item per process_audio() call.
+    # This lets us test the full audio-loop → text_queue → broadcast → SSE
+    # pipeline without requiring a GPU or real speech audio.
+    class _AutoEmitEngine:
+        model_name = "mock-auto"
+        def __init__(self):
+            self.text_queue = queue_mod.Queue()
+            self._count = 0
+        def init_session(self, offset=None):
+            pass
+        def process_audio(self, chunk):
+            self._count += 1
+            self.text_queue.put(f"segment-{self._count}")
+        def finish_session(self):
+            return None
+
+    engine = _AutoEmitEngine()
 
     svc_id = f"hypha-whisper-test-{uuid.uuid4().hex[:8]}"
     _hc_module.SERVICE_ID = svc_id
-
-    engine = WhisperEngine(model_name="tiny.en")
-    mic = MockMicCapture([tone_f32] * N_CHUNKS)
 
     client = HyphaClient(
         server_url="https://hypha.aicell.io/",
         workspace=workspace,
         token=token,
-        mic_capture=mic,
-        whisper_engine=engine,
+        streaming_engine=engine,
     )
     await client._connect_with_backoff()
     await client._register()
+    # Prime session once (mirrors main.py startup behaviour).
+    engine.init_session()
 
     ws = client._server.config.workspace
     url = f"https://hypha.aicell.io/{ws}/apps/{svc_id}/transcript_feed"
@@ -129,6 +145,18 @@ async def test_sustained_pipeline_ci(tone_f32):
     cpu_samples = []
     ram_samples = []
 
+    loop = asyncio.get_event_loop()
+    import numpy as np
+    dummy_chunk = np.zeros(16000, dtype=np.float32)  # 1 s silence
+
+    async def _audio_feeder():
+        """Wait for SSE client to connect, then emit N chunks."""
+        await asyncio.sleep(3.0)
+        for _ in range(N_CHUNKS):
+            await loop.run_in_executor(None, engine.process_audio, dummy_chunk)
+            await asyncio.sleep(0.05)
+
+    feeder_task = asyncio.create_task(_audio_feeder())
     try:
         async with httpx.AsyncClient() as http:
             async with http.stream(
@@ -140,7 +168,7 @@ async def test_sustained_pipeline_ci(tone_f32):
 
                 t_last = time.monotonic()
                 async for line in resp.aiter_lines():
-                    if not line:
+                    if not line or not line.startswith("data:"):
                         continue
                     now = time.monotonic()
                     gap = now - t_last
@@ -155,6 +183,7 @@ async def test_sustained_pipeline_ci(tone_f32):
                     )
                     if len(events) >= N_CHUNKS:
                         break
+        await feeder_task
     finally:
         await asyncio.sleep(0.6)
         await client._server.disconnect()
