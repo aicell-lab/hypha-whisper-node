@@ -63,11 +63,11 @@ def parse_args():
     p.add_argument("--token",
                    default=os.environ.get("HYPHA_WORKSPACE_TOKEN", ""),
                    help="Workspace token (default: $HYPHA_WORKSPACE_TOKEN)")
-    p.add_argument("--model", default="small.en",
-                   help="Whisper model name or HuggingFace ID (default: small.en)")
-    p.add_argument("--backend", default="whisper-timestamped",
-                   choices=["whisper-timestamped", "distil-whisper"],
-                   help="ASR backend (default: whisper-timestamped)")
+    p.add_argument("--model", default="base.en",
+                   help="Whisper model name or HuggingFace ID (default: base.en)")
+    p.add_argument("--backend", default="whisper-plain",
+                   choices=["whisper-plain", "whisper-timestamped", "distil-whisper"],
+                   help="ASR backend (default: whisper-plain)")
     p.add_argument("--device", default="",
                    help="PyTorch device: cuda or cpu (default: auto)")
     p.add_argument("--mic", default="",

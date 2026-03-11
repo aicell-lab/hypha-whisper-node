@@ -11,7 +11,7 @@ class VADIterator:
                  model,
                  threshold: float = 0.5,
                  sampling_rate: int = 16000,
-                 min_silence_duration_ms: int = 500,  # makes sense on one recording that I checked
+                 min_silence_duration_ms: int = 300,  # reduced from 500ms for lower commit latency
                  speech_pad_ms: int = 100             # same 
                  ):
 

@@ -24,7 +24,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "small.en"
+DEFAULT_MODEL = "base.en"
+DEFAULT_BACKEND = "whisper-plain"
 
 
 def _try_import_doa():
@@ -193,6 +194,77 @@ class _OptimizedWhisperTimestampedASR:
         self.transcribe_kargs["task"] = "translate"
 
 
+class _PlainWhisperASR:
+    """Fast Whisper backend — plain whisper.transcribe(), no DTW word alignment.
+
+    Avoids the ~30-50% overhead of whisper-timestamped's DTW pass by estimating
+    word timestamps proportionally within each segment. Sufficient for
+    LocalAgreement's N-gram matching (word text + approximate timing only).
+
+    Default backend for streaming transcription on Jetson Orin Nano.
+    """
+
+    sep = " "
+
+    def __init__(self, lan, modelsize=None, cache_dir=None, model_dir=None, logfile=sys.stderr):
+        self.original_language = lan if lan != "auto" else None
+        self.transcribe_kargs = {}
+        import torch
+        import whisper
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "[_PlainWhisperASR] CUDA not available — "
+                "cannot load Whisper model (check LD_LIBRARY_PATH and GPU state)"
+            )
+        logger.info("[_PlainWhisperASR] Loading '%s' on cuda...", modelsize or model_dir)
+        self.model = whisper.load_model(
+            modelsize or model_dir, device="cuda", download_root=cache_dir
+        )
+        logger.info("[_PlainWhisperASR] Model loaded on cuda")
+
+    def transcribe(self, audio, init_prompt=""):
+        return self.model.transcribe(
+            audio,
+            language=self.original_language,
+            initial_prompt=init_prompt if init_prompt else None,
+            condition_on_previous_text=False,
+            fp16=True,
+            beam_size=1,
+            temperature=0.0,
+            **self.transcribe_kargs,
+        )
+
+    def ts_words(self, r):
+        """Estimate word timestamps proportionally within each segment.
+
+        Plain whisper.transcribe() gives segment-level timestamps only.
+        We distribute word start/end times evenly across each segment's duration.
+        """
+        o = []
+        for s in r.get("segments", []):
+            words = s["text"].strip().split()
+            if not words:
+                continue
+            seg_start = float(s["start"])
+            seg_end = float(s["end"])
+            if seg_end <= seg_start:
+                seg_end = seg_start + 0.1 * len(words)
+            dur = (seg_end - seg_start) / len(words)
+            for i, w in enumerate(words):
+                o.append((seg_start + i * dur, seg_start + (i + 1) * dur, w))
+        return o
+
+    def segments_end_ts(self, res):
+        return [s["end"] for s in res.get("segments", [])]
+
+    def use_vad(self):
+        pass  # VAC handles VAD externally
+
+    def set_translate_task(self):
+        if self.original_language:
+            self.transcribe_kargs["task"] = "translate"
+
+
 class StreamingEngine:
     """Wraps OnlineASRProcessor and exposes a simple per-session API.
 
@@ -208,10 +280,10 @@ class StreamingEngine:
         self,
         model_name: str = DEFAULT_MODEL,
         language: str = "en",
-        backend: str = "whisper-timestamped",
+        backend: str = DEFAULT_BACKEND,
         use_vac: bool = True,
         chunk_seconds: float = 0.5,
-        buffer_trimming_sec: float = 8.0,
+        buffer_trimming_sec: float = 4.0,
         enable_doa: bool = True,
         enable_speaker_id: bool = True,
     ):
@@ -259,8 +331,10 @@ class StreamingEngine:
         logger.info("[StreamingEngine] Loading model '%s' (backend: %s)...", model_name, backend)
         if backend == "distil-whisper":
             asr = _DistilWhisperASR(lan=language, modelsize=model_name)
-        else:
+        elif backend == "whisper-timestamped":
             asr = _OptimizedWhisperTimestampedASR(lan=language, modelsize=model_name)
+        else:  # whisper-plain (default)
+            asr = _PlainWhisperASR(lan=language, modelsize=model_name)
 
         buffer_trimming = ("segment", buffer_trimming_sec)
 
