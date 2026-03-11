@@ -5,7 +5,8 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 
 **It's live! Give it a try:**
 
-> [**🎙️ Open Live Transcript Viewer →**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/) &nbsp;&nbsp; [**📡 SSE Stream**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed) &nbsp;&nbsp; [**💚 Health**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health)
+> [**🎙️ Open Live Transcript Viewer →**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/) &nbsp;&nbsp; [**📡 SSE Stream**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed) &nbsp;&nbsp; [**💚 Health**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health)&nbsp; 
+[**📋 Logs**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/logs)
 
 ---
 
