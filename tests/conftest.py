@@ -14,12 +14,15 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Service management — stop hypha-whisper before hardware tests, restore after
+# Service management — stop hypha-whisper + watchdog before hardware tests
 # ---------------------------------------------------------------------------
 
-def _service_is_active() -> bool:
+_SERVICES = ["hypha-whisper", "hypha-whisper-watchdog"]
+
+
+def _service_is_active(name: str = "hypha-whisper") -> bool:
     result = subprocess.run(
-        ["systemctl", "is-active", "--quiet", "hypha-whisper"],
+        ["systemctl", "is-active", "--quiet", name],
         capture_output=True,
     )
     return result.returncode == 0
@@ -34,42 +37,54 @@ def _service_is_enabled() -> bool:
 
 
 def _sudo_passwordless() -> bool:
-    """Return True if sudo systemctl stop can run without a password prompt."""
-    result = subprocess.run(
-        ["sudo", "-n", "systemctl", "stop", "hypha-whisper"],
-        capture_output=True,
-    )
-    return b"password" not in result.stderr
+    """Return True if sudo systemctl stop can run without a password prompt.
+
+    Also stops both services as a side-effect (the -n dry-run triggers the check).
+    """
+    for svc in _SERVICES:
+        result = subprocess.run(
+            ["sudo", "-n", "systemctl", "stop", svc],
+            capture_output=True,
+        )
+        if b"password" in result.stderr:
+            return False
+    return True
 
 
 def _service_control(action: str):
-    subprocess.run(["sudo", "systemctl", action, "hypha-whisper"],
-                   capture_output=True)
+    """Apply systemctl action to both services (watchdog first on stop, main first on start)."""
+    if action == "stop":
+        order = _SERVICES  # stop watchdog first, then main (or main cascades via BindsTo)
+    else:
+        order = [_SERVICES[0]]  # start main only — Wants= pulls up watchdog automatically
+    for svc in order:
+        subprocess.run(["sudo", "systemctl", action, svc], capture_output=True)
 
 
 @pytest.fixture(scope="session", autouse=False)
 def suspend_service():
-    """Stop hypha-whisper before hardware tests; restart it afterward if it was enabled.
+    """Stop hypha-whisper and hypha-whisper-watchdog before hardware tests;
+    restart them afterward if hypha-whisper was enabled.
 
     Requires passwordless sudo for systemctl stop/start. Set up once with:
-        echo "YOUR_USER ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \\
+        echo "YOUR_USER ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper, /bin/systemctl start hypha-whisper-watchdog, /bin/systemctl stop hypha-whisper-watchdog" \\
             | sudo tee /etc/sudoers.d/hypha-whisper-tests
 
-    Runs a background keeper thread that unconditionally stops the service every 3 s,
+    Runs a background keeper thread that unconditionally stops both services every 3 s,
     preventing systemd's Restart=always (including the activating phase) from
     reclaiming the microphone during tests.
 
     If passwordless sudo is not configured, the fixture skips with instructions.
     """
-    # Check enabled state BEFORE _sudo_passwordless() which stops the service as a side-effect.
+    # Check enabled state BEFORE _sudo_passwordless() which stops services as a side-effect.
     was_enabled = _service_is_enabled()
-    can_sudo = _sudo_passwordless()  # also stops the service if running
+    can_sudo = _sudo_passwordless()  # also stops both services if running
 
     if _service_is_active():
         if not can_sudo:
             pytest.skip(
                 "hypha-whisper is running and passwordless sudo is not configured. "
-                "Either stop it manually ('sudo systemctl stop hypha-whisper') "
+                "Either stop it manually ('sudo systemctl stop hypha-whisper hypha-whisper-watchdog') "
                 "or add a sudoers rule — see conftest.py suspend_service docstring."
             )
 
@@ -77,9 +92,9 @@ def suspend_service():
         yield
         return
 
-    print("\n[fixture] hypha-whisper stopped; keeping it down during tests...")
+    print("\n[fixture] hypha-whisper + watchdog stopped; keeping them down during tests...")
 
-    # Keeper: stop unconditionally every 3 s — catches activating+active phases.
+    # Keeper: stop both unconditionally every 3 s — catches activating+active phases.
     _stop_keeper = threading.Event()
 
     def _keep_stopped():
@@ -97,7 +112,7 @@ def suspend_service():
 
     if was_enabled:
         print("\n[fixture] Restarting hypha-whisper service...")
-        _service_control("start")
+        _service_control("start")  # Wants= brings up watchdog automatically
         print("[fixture] hypha-whisper restarted.")
 
 

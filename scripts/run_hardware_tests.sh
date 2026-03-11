@@ -33,32 +33,33 @@ fi
 
 # ── Service management ──────────────────────────────────────────────────────
 SERVICE_WAS_RUNNING=false
-if systemctl is-active --quiet hypha-whisper 2>/dev/null; then
+if systemctl is-active --quiet hypha-whisper 2>/dev/null || \
+   systemctl is-active --quiet hypha-whisper-watchdog 2>/dev/null; then
     SERVICE_WAS_RUNNING=true
     # Check if we can sudo without a password
-    if sudo -n systemctl is-active hypha-whisper &>/dev/null || \
-       ! sudo -n systemctl is-active hypha-whisper 2>&1 | grep -q "password"; then
-        echo "[setup] Stopping hypha-whisper service..."
-        sudo systemctl stop hypha-whisper
-        echo "[setup] Service stopped."
+    if sudo -n systemctl stop hypha-whisper &>/dev/null && \
+       sudo -n systemctl stop hypha-whisper-watchdog &>/dev/null; then
+        echo "[setup] Stopping hypha-whisper and watchdog services..."
+        sudo systemctl stop hypha-whisper hypha-whisper-watchdog
+        echo "[setup] Services stopped."
     else
         echo ""
         echo "[ERROR] hypha-whisper is running but passwordless sudo is not configured."
-        echo "  Option 1: Stop it manually:  sudo systemctl stop hypha-whisper"
+        echo "  Option 1: Stop manually:  sudo systemctl stop hypha-whisper hypha-whisper-watchdog"
         echo "  Option 2: Add sudoers rule:"
-        echo "    echo \"$USER ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper\" \\"
+        echo "    echo \"$USER ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper, /bin/systemctl start hypha-whisper-watchdog, /bin/systemctl stop hypha-whisper-watchdog\" \\"
         echo "        | sudo tee /etc/sudoers.d/hypha-whisper-tests"
         exit 1
     fi
 else
-    echo "[setup] hypha-whisper service is not running — proceeding."
+    echo "[setup] hypha-whisper services are not running — proceeding."
 fi
 
 restore_service() {
     if [ "$SERVICE_WAS_RUNNING" = true ]; then
         echo ""
         echo "[teardown] Restarting hypha-whisper service..."
-        sudo systemctl start hypha-whisper
+        sudo systemctl start hypha-whisper  # Wants= brings up watchdog automatically
         echo "[teardown] Service restarted."
     fi
 }
