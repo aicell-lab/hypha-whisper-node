@@ -72,6 +72,10 @@ def parse_args():
                    help="PyTorch device: cuda or cpu (default: auto)")
     p.add_argument("--mic", default="",
                    help="Preferred mic name substring (default: auto-detect ReSpeaker then HIK)")
+    p.add_argument("--prompt", default=os.environ.get("WHISPER_PROMPT", ""),
+                   help="Domain vocabulary prompt prepended to every Whisper transcription call "
+                        "(e.g. 'Hypha, AICell Lab, bioimaging'). "
+                        "Also reads $WHISPER_PROMPT env var.")
     return p.parse_args()
 
 
@@ -142,6 +146,7 @@ async def main():
     engine = StreamingEngine(
         model_name=args.model,
         backend=args.backend,
+        prompt_prefix=args.prompt,
     )
 
     # ------------------------------------------------------------------

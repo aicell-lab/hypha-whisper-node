@@ -87,6 +87,10 @@ class _DistilWhisperASR:
         logger.info("[_DistilWhisperASR] Model loaded on cuda")
 
     def transcribe(self, audio, init_prompt=""):
+        if getattr(self, "prompt_prefix", "") and init_prompt:
+            init_prompt = self.prompt_prefix + " " + init_prompt
+        elif getattr(self, "prompt_prefix", ""):
+            init_prompt = self.prompt_prefix
         generate_kwargs = {}
         if self.original_language:
             generate_kwargs["language"] = self.original_language
@@ -162,6 +166,10 @@ class _OptimizedWhisperTimestampedASR:
         logger.info("[_OptimizedWhisperTimestampedASR] Model loaded on cuda")
 
     def transcribe(self, audio, init_prompt=""):
+        if getattr(self, "prompt_prefix", "") and init_prompt:
+            init_prompt = self.prompt_prefix + " " + init_prompt
+        elif getattr(self, "prompt_prefix", ""):
+            init_prompt = self.prompt_prefix
         result = self.transcribe_timestamped(
             self.model,
             audio,
@@ -223,6 +231,10 @@ class _PlainWhisperASR:
         logger.info("[_PlainWhisperASR] Model loaded on cuda")
 
     def transcribe(self, audio, init_prompt=""):
+        if getattr(self, "prompt_prefix", "") and init_prompt:
+            init_prompt = self.prompt_prefix + " " + init_prompt
+        elif getattr(self, "prompt_prefix", ""):
+            init_prompt = self.prompt_prefix
         return self.model.transcribe(
             audio,
             language=self.original_language,
@@ -286,6 +298,7 @@ class StreamingEngine:
         buffer_trimming_sec: float = 4.0,
         enable_doa: bool = True,
         enable_speaker_id: bool = True,
+        prompt_prefix: str = "",
     ):
         self.model_name = model_name
         self.text_queue: queue.Queue = queue.Queue()
@@ -335,6 +348,9 @@ class StreamingEngine:
             asr = _OptimizedWhisperTimestampedASR(lan=language, modelsize=model_name)
         else:  # whisper-plain (default)
             asr = _PlainWhisperASR(lan=language, modelsize=model_name)
+        if prompt_prefix:
+            asr.prompt_prefix = prompt_prefix
+            logger.info("[StreamingEngine] Domain prompt prefix: %r", prompt_prefix)
 
         buffer_trimming = ("segment", buffer_trimming_sec)
 
