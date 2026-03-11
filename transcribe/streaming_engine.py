@@ -556,6 +556,26 @@ class StreamingEngine:
                 )
                 return True
 
+        # 5. Hyphen-stutter loop — catches "we-we-we-we-we-..." patterns where
+        #    a syllable or short word is repeated via hyphens ≥6 times.
+        #    e.g. "wee-we-we-we-we-we-we-..." or "ha-ha-ha-ha-ha-ha-ha-..."
+        for word in words:
+            parts = word.lower().split("-")
+            if len(parts) >= 6:
+                part_counts: dict[str, int] = {}
+                for p in parts:
+                    p = p.strip(".,!?;:")
+                    if p:
+                        part_counts[p] = part_counts.get(p, 0) + 1
+                if part_counts:
+                    top_part, top_part_count = max(part_counts.items(), key=lambda x: x[1])
+                    if top_part_count >= 6 and top_part_count / len(parts) > 0.5:
+                        logger.warning(
+                            "[StreamingEngine] Hallucination (hyphen-stutter %r ×%d) — dropped",
+                            top_part, top_part_count,
+                        )
+                        return True
+
         return False
 
     # ------------------------------------------------------------------
