@@ -30,7 +30,7 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 - Real-time transcript streaming via Hypha ASGI service (SSE)
 - Live transcript viewer — browser-based HTML page at `/`
 - ReSpeaker 4 Mic Array: hardware beamforming + 4-mic noise suppression via ch0
-- **Direction-based speaker identification** — ReSpeaker USB DOA angle tags each utterance with the speaker's direction (e.g. `45°`); utterances within ±60° continue as the same speaker, beyond that registers a new one
+- **Direction annotation** — ReSpeaker USB DOA angle tags each utterance with the speaker's direction (e.g. `45°`); note: speaker grouping is best-effort only (see known limitations)
 - Auto-reconnect to Hypha on network loss (exponential backoff)
 - systemd service with watchdog (`WatchdogSec=180`) and auto-restart
 
@@ -112,13 +112,14 @@ If the Hypha server drops, the service reconnects automatically (exponential bac
 
 ## Endpoints
 
-Once running, the service exposes three endpoints via Hypha:
+Once running, the service exposes these endpoints via Hypha:
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Live transcript viewer — open in any browser |
-| `GET /transcript_feed` | SSE stream — one `data: <text>` event per committed phrase |
+| `GET /transcript_feed` | SSE stream — one `data: <json>` event per committed phrase |
 | `GET /health` | JSON: `{"status":"ok","model":"small.en","uptime_seconds":123}` |
+| `GET /logs?tail=N` | SSE stream of all Python log records; `tail=N` replays last N lines first |
 
 **Live deployment (reef-imaging workspace):**
 
@@ -127,19 +128,23 @@ Once running, the service exposes three endpoints via Hypha:
 | [hypha.aicell.io/reef-imaging/apps/hypha-whisper/](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/) | Live transcript viewer |
 | [hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed) | SSE transcript stream |
 | [hypha.aicell.io/reef-imaging/apps/hypha-whisper/health](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health) | Health check |
+| [hypha.aicell.io/reef-imaging/apps/hypha-whisper/logs?tail=100](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/logs?tail=100) | Live log stream |
 
 Full URL pattern:
 ```
 https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/
 https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/transcript_feed
 https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/health
+https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/logs?tail=100
 ```
 
 ### Live transcript viewer
 
 Open `https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/` in a browser. The page connects automatically to `transcript_feed` via `EventSource`, accumulates text, and auto-scrolls. A **Clear** button resets the display. The connection indicator shows green when live and retries automatically on disconnect.
 
-Each transcript segment is tagged with a coloured direction badge (e.g. **45°**) showing which direction the speaker came from. Consecutive segments from the same direction are merged into one line.
+Each transcript segment is tagged with a coloured direction badge (e.g. **45°**) showing the DOA angle when the speech was detected. Consecutive segments from the same direction are grouped into one line.
+
+> **Known limitation — speaker/angle attribution:** LocalAgreement (the streaming ASR algorithm) introduces 3–5 s commit latency. If a second speaker starts talking before the first speaker's text is committed, both speakers' audio overlap in the pending buffer and the DOA angle at commit time may reflect the second speaker rather than the first. The raw `angle` field is the most reliable signal; the `speaker` grouping label is best-effort only.
 
 ### SSE payload format
 
@@ -165,6 +170,34 @@ with httpx.stream("GET", url) as r:
     for line in r.iter_lines():
         if line.startswith("data: "):
             print(line[6:])
+```
+
+### Log stream (`/logs`)
+
+Designed for AI agents and automated monitoring. Each SSE event is a JSON object:
+
+```json
+{"ts": 1741694400.123, "level": "INFO", "logger": "transcribe.streaming_engine", "msg": "12:00:00 INFO     ... — Engine ready"}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ts` | Unix timestamp (float) |
+| `level` | `DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` |
+| `logger` | Python logger name (e.g. `rpc.hypha_client`) |
+| `msg` | Fully formatted log line |
+
+Query parameter `tail=N` replays the last N buffered records (up to 2000) before streaming live — useful for catching up after connecting:
+
+```python
+import httpx, json
+
+url = "https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/logs"
+with httpx.stream("GET", url, params={"tail": 100}) as r:
+    for line in r.iter_lines():
+        if line.startswith("data: "):
+            record = json.loads(line[6:])
+            print(f"[{record['level']}] {record['msg']}")
 ```
 
 ---

@@ -11,6 +11,7 @@ Registers a FastAPI ASGI service on Hypha that exposes:
                           Session lifecycle (init/finish) is managed by
                           main.py at startup/shutdown, not per-client.
   GET /health           — JSON status dict
+  GET /logs             — SSE stream of Python logging records; ?tail=N replays last N lines
 
 Environment variables (set in /etc/hypha-whisper/config.env):
     HYPHA_SERVER  — e.g. https://hypha.aicell.io/
@@ -23,6 +24,7 @@ Usage:
 """
 
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -54,6 +56,51 @@ _start_time: float = 0.0
 _subscribers: set = set()
 _broadcast_task = None
 _CLEAR_SENTINEL = {"_clear": True}
+
+# ---------------------------------------------------------------------------
+# Log streaming — captures all Python logging records and fans out to SSE
+# ---------------------------------------------------------------------------
+
+_log_queue: queue.Queue = queue.Queue(maxsize=2000)
+_log_subscribers: set = set()
+_log_broadcast_task = None
+_log_buffer: collections.deque = collections.deque(maxlen=2000)  # rolling history for ?tail=N
+
+
+class _LogQueueHandler(logging.Handler):
+    """Logging handler that puts formatted records into _log_queue and _log_buffer."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            entry = {
+                "ts": record.created,
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": msg,
+            }
+            _log_buffer.append(entry)
+            _log_queue.put_nowait(entry)
+        except queue.Full:
+            pass  # drop silently if no consumer is draining fast enough
+        except Exception:
+            self.handleError(record)
+
+
+_log_handler: _LogQueueHandler | None = None
+
+
+def _install_log_handler() -> None:
+    """Attach _LogQueueHandler to the root logger (idempotent)."""
+    global _log_handler
+    if _log_handler is not None:
+        return
+    _log_handler = _LogQueueHandler()
+    _log_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logging.getLogger().addHandler(_log_handler)
 
 
 def _push_to_subscribers(item) -> None:
@@ -380,6 +427,78 @@ async def clear_session():
     return {"status": "cleared"}
 
 
+# ---------------------------------------------------------------------------
+# Log feed
+# ---------------------------------------------------------------------------
+
+async def _log_broadcast_loop():
+    """Background task: drain _log_queue and fan out to all log SSE clients."""
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            record = await asyncio.wait_for(
+                loop.run_in_executor(None, _log_queue.get, True, 0.5),
+                timeout=15.0,
+            )
+            for q in list(_log_subscribers):
+                try:
+                    q.put_nowait(record)
+                except asyncio.QueueFull:
+                    pass
+        except (asyncio.TimeoutError, queue.Empty):
+            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Use print to avoid infinite recursion via logging
+            print(f"[log_broadcast_loop] error: {exc}")
+
+
+def _ensure_log_broadcast_loop():
+    global _log_broadcast_task
+    if _log_broadcast_task is None or _log_broadcast_task.done():
+        _log_broadcast_task = asyncio.get_event_loop().create_task(_log_broadcast_loop())
+
+
+@app.get("/logs")
+async def logs(tail: int = 0):
+    """SSE stream of all Python logging records from this process.
+
+    Query parameters:
+        tail  — emit the last N buffered records before streaming live ones
+                (0 = only new records, max capped at 2000)
+
+    Each SSE event carries a newline-delimited JSON object:
+        {"ts": <unix epoch float>, "level": "INFO"|"WARNING"|...,
+         "logger": "<logger name>", "msg": "<formatted log line>"}
+
+    A keep-alive comment (": keep-alive") is sent every 15 s when idle so
+    the connection is not dropped by proxies or HTTP clients.
+    """
+    tail = max(0, min(tail, len(_log_buffer)))
+
+    async def sse_gen():
+        # Replay buffered records first
+        for entry in list(_log_buffer)[-tail:]:
+            yield f"data: {json.dumps(entry)}\n\n"
+
+        # Then stream live records
+        client_q: asyncio.Queue = asyncio.Queue(maxsize=512)
+        _log_subscribers.add(client_q)
+        _ensure_log_broadcast_loop()
+        try:
+            while True:
+                try:
+                    record = await asyncio.wait_for(client_q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(record)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            _log_subscribers.discard(client_q)
+
+    return StreamingResponse(sse_gen(), media_type="text/event-stream")
+
+
 def _sd_notify(msg: str) -> None:
     """Send a message to the systemd notification socket (no-op if not running under systemd)."""
     sock_path = os.environ.get("NOTIFY_SOCKET", "")
@@ -409,6 +528,7 @@ class HyphaClient:
     def __init__(self, server_url: str, token: str, streaming_engine,
                  workspace: str = ""):
         global _engine, _text_queue, _start_time, _subscribers, _broadcast_task
+        global _log_subscribers, _log_broadcast_task
         self.server_url = server_url.rstrip("/")
         self.workspace = workspace
         self.token = token
@@ -422,6 +542,12 @@ class HyphaClient:
         if _broadcast_task is not None and not _broadcast_task.done():
             _broadcast_task.cancel()
         _broadcast_task = None
+        # Install log handler so /log_feed captures all logging output.
+        _install_log_handler()
+        _log_subscribers = set()
+        if _log_broadcast_task is not None and not _log_broadcast_task.done():
+            _log_broadcast_task.cancel()
+        _log_broadcast_task = None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -434,9 +560,12 @@ class HyphaClient:
             await self._connect_with_backoff()
             await self._register()
             logger.info(
-                "[hypha] ASGI service '%s' registered. Try: %s/%s/apps/%s/transcript_feed",
-                SERVICE_ID, self.server_url,
-                self._server.config.workspace, SERVICE_ID,
+                "[hypha] ASGI service '%s' registered. "
+                "transcript: %s/%s/apps/%s/transcript_feed  "
+                "logs: %s/%s/apps/%s/logs?tail=50",
+                SERVICE_ID,
+                self.server_url, self._server.config.workspace, SERVICE_ID,
+                self.server_url, self._server.config.workspace, SERVICE_ID,
             )
             if first:
                 _sd_notify("READY=1")

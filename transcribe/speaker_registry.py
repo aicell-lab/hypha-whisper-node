@@ -20,7 +20,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-DOA_MATCH_DEG = 30  # angular diff <= this → same speaker
+DOA_MATCH_DEG = 60  # angular diff <= this → same speaker
 
 
 class SpeakerRegistry:

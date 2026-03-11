@@ -56,6 +56,10 @@ Build a portable, real-time speech-to-text edge node that:
   - On disconnect: `engine.finish_session()` flushes remaining audio
 - [x] Connection to https://hypha.aicell.io/ confirmed ✅
 - [x] Fix `KeyError: 'Service not found'` keepalive false reconnects — treat KeyError as non-fatal
+- [x] Add `GET /logs?tail=N` SSE endpoint — streams all Python logging records (AI-agent-friendly JSON)
+  - `_LogQueueHandler` attached to root logger; records go to `_log_buffer` (deque, maxlen=2000) + `_log_queue`
+  - `tail=N` replays last N buffered records before live stream; capped at 2000
+  - Each event: `{"ts": float, "level": str, "logger": str, "msg": str}`
 
 ---
 
@@ -191,4 +195,5 @@ hypha-whisper-node/
 - numpy must stay at 1.26.4 — whisper-timestamped upgrades it to 2.x breaking PyTorch ABI
 - `sudo python3` on Jetson has no pip and no user site-packages; run sudo scripts with user packages via:
   `sudo PYTHONPATH=/home/reef-orinnano/.local/lib/python3.10/site-packages python3 <script.py>`
-- **ReSpeaker DOA**: USB hardware DOA (firmware v4.0) broken on Linux/Jetson; firmware downgrade confirmed same v4.0. Fixed via **software GCC-PHAT DOA** (`_SoftwareDOAProcessor` in `audio/doa_reader.py`, pyroomacoustics SRP-PHAT on ch1–4 raw mics). Requires `pip install --user pyroomacoustics`. Wired: `MicCapture.multichannel_queue` → `StreamingEngine(multichannel_queue=...)` → `DOAReader`.
+- **ReSpeaker DOA**: USB hardware DOA working via `ctrl_transfer(0xC0, 0, 0xC0, 21, 8)` after firmware DFU to v3.0. DOA hardware jitter is ±30–50°; `DOA_MATCH_DEG=60` in `speaker_registry.py`.
+- **Speaker attribution is fundamentally unreliable** — LocalAgreement commits text 3–5 s after speech ends. If a second speaker starts before the first speaker's text commits, both speakers' DOA angles are mixed in the pending window and the wrong angle gets attributed to the first speaker's text. This is an architectural limitation of streaming ASR with LocalAgreement and cannot be fixed without switching to a segment-first diarization pipeline. The raw `angle` field per transcript item is reliable; the `speaker` grouping label is best-effort only. Do not invest more time trying to fix this in `speaker_registry.py` or `streaming_engine.py` — the root cause is upstream in whisper_streaming's commit timing.
