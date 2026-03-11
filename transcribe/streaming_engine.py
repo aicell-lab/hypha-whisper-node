@@ -135,7 +135,7 @@ class _DistilWhisperASR:
 class _OptimizedWhisperTimestampedASR:
     """Optimized whisper-timestamped backend for Jetson Orin Nano GPU.
 
-    Uses fp16 on CUDA, beam_size=3, and condition_on_previous_text=False
+    Uses fp16 on CUDA, beam_size=1, and condition_on_previous_text=False
     for faster streaming transcription with LocalAgreement.
     """
 
@@ -169,7 +169,8 @@ class _OptimizedWhisperTimestampedASR:
             verbose=None,
             condition_on_previous_text=False,
             fp16=True,
-            beam_size=3,
+            beam_size=1,
+            temperature=0.0,
             **self.transcribe_kargs,
         )
         return result

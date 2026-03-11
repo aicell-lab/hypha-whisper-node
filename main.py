@@ -18,6 +18,7 @@ Offline mode (no --server / HYPHA_SERVER): transcribes locally and prints to std
 
 import argparse
 import asyncio
+import concurrent.futures
 import logging
 import os
 import queue
@@ -78,23 +79,28 @@ async def audio_loop(mic, engine, shutdown: asyncio.Event):
     """Continuously feed raw audio chunks from the mic into the streaming engine.
 
     Runs as an independent asyncio Task. The engine's process_audio() is
-    blocking (runs Whisper inference), so it executes in a thread executor.
+    blocking (runs Whisper inference), so it executes in a dedicated single-
+    worker thread pool to prevent default pool saturation during inference.
     Committed text is placed into engine.text_queue by process_audio().
     """
     loop = asyncio.get_event_loop()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     logger.info("[audio_loop] Started")
-    while not shutdown.is_set():
-        try:
-            chunk = await asyncio.wait_for(
-                loop.run_in_executor(None, mic.raw_audio_queue.get, True, 0.1),
-                timeout=0.5,
-            )
-        except (asyncio.TimeoutError, queue.Empty):
-            continue
-        try:
-            await loop.run_in_executor(None, engine.process_audio, chunk)
-        except Exception as exc:
-            logger.warning("[audio_loop] process_audio error: %s", exc)
+    try:
+        while not shutdown.is_set():
+            try:
+                chunk = await asyncio.wait_for(
+                    loop.run_in_executor(executor, mic.raw_audio_queue.get, True, 0.1),
+                    timeout=0.5,
+                )
+            except (asyncio.TimeoutError, queue.Empty):
+                continue
+            try:
+                await loop.run_in_executor(executor, engine.process_audio, chunk)
+            except Exception as exc:
+                logger.warning("[audio_loop] process_audio error: %s", exc)
+    finally:
+        executor.shutdown(wait=False)
 
 
 async def run_offline(engine, shutdown: asyncio.Event):
