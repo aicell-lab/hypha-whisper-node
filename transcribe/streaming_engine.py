@@ -536,6 +536,26 @@ class StreamingEngine:
             logger.warning("[StreamingEngine] Hallucination (duplicate commit) — dropped")
             return True
 
+        # 4. N-gram loop — catches comma-separated repetitions like
+        #    "the other one, the other one, the other one, ..."
+        #    where sentence-split and word-count checks both miss it.
+        clean_words = [w.lower().strip(".,!?;:") for w in words]
+        for n in range(2, 7):
+            if len(clean_words) < n * 4:
+                continue
+            ngram_counts: dict = {}
+            for i in range(len(clean_words) - n + 1):
+                ngram = tuple(clean_words[i : i + n])
+                ngram_counts[ngram] = ngram_counts.get(ngram, 0) + 1
+            top_ngram, top_count = max(ngram_counts.items(), key=lambda x: x[1])
+            if top_count >= 4 and top_count * n / len(clean_words) > 0.4:
+                logger.warning(
+                    "[StreamingEngine] Hallucination (n-gram loop %r ×%d) — dropped",
+                    " ".join(top_ngram),
+                    top_count,
+                )
+                return True
+
         return False
 
     # ------------------------------------------------------------------
