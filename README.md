@@ -3,6 +3,10 @@
 Portable real-time speech-to-text node powered by Whisper and Jetson Orin Nano.
 Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the LocalAgreement streaming algorithm, and streams results through [Hypha RPC](https://pypi.org/project/hypha-rpc/).
 
+**It's live! Give it a try:**
+
+> [**🎙️ Open Live Transcript Viewer →**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/) &nbsp;&nbsp; [**📡 SSE Stream**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed) &nbsp;&nbsp; [**💚 Health**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health)
+
 ---
 
 ## Hardware
@@ -115,6 +119,14 @@ Once running, the service exposes three endpoints via Hypha:
 | `GET /` | Live transcript viewer — open in any browser |
 | `GET /transcript_feed` | SSE stream — one `data: <text>` event per committed phrase |
 | `GET /health` | JSON: `{"status":"ok","model":"small.en","uptime_seconds":123}` |
+
+**Live deployment (reef-imaging workspace):**
+
+| URL | Description |
+|-----|-------------|
+| [hypha.aicell.io/reef-imaging/apps/hypha-whisper/](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/) | Live transcript viewer |
+| [hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed) | SSE transcript stream |
+| [hypha.aicell.io/reef-imaging/apps/hypha-whisper/health](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health) | Health check |
 
 Full URL pattern:
 ```
