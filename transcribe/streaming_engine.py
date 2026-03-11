@@ -242,6 +242,7 @@ class StreamingEngine:
                     self._speaker_registry = None
 
         self._last_commit_time: float = 0.0
+        self._last_committed_text: str = ""
 
         # Add transcribe/ to sys.path so whisper_online.py can be imported
         _here = os.path.dirname(__file__)
@@ -314,6 +315,7 @@ class StreamingEngine:
                 break
         self._online.init()
         self._last_commit_time = time.monotonic()
+        self._last_committed_text = ""
         if self._speaker_registry is not None:
             self._speaker_registry.reset()
         logger.info("[StreamingEngine] Session initialised")
@@ -343,7 +345,7 @@ class StreamingEngine:
             if isinstance(self._online, VACOnlineASRProcessor):
                 begin, end, text = self._online.online.process_iter()
                 text = text.strip() if text else ""
-                if text:
+                if text and not self._is_hallucination(text):
                     self._emit_item(text, self._last_commit_time)
                     logger.info("[StreamingEngine] Pre-flush committed: %r", text)
         except Exception as exc:
@@ -355,7 +357,7 @@ class StreamingEngine:
             logger.warning("[StreamingEngine] finish() raised: %s", exc)
             return None
         text = text.strip() if text else ""
-        if text:
+        if text and not self._is_hallucination(text):
             self._emit_item(text, self._last_commit_time)
             logger.info("[StreamingEngine] Flushed final: %r", text)
 
@@ -381,12 +383,69 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
+            if self._is_hallucination(text):
+                return None
             commit_time = self._last_commit_time
             self._last_commit_time = time.monotonic()
             self._emit_item(text, commit_time)
             logger.debug("[StreamingEngine] Committed [%.2f–%.2f]: %r", begin or 0, end or 0, text)
             return text
         return None
+
+    # ------------------------------------------------------------------
+    # Hallucination filter
+    # ------------------------------------------------------------------
+
+    def _is_hallucination(self, text: str) -> bool:
+        """Return True if text matches common Whisper hallucination patterns.
+
+        Patterns detected:
+          1. Word loop  — single word repeated ≥6 times and >50% of tokens
+                          e.g. "yeah yeah yeah yeah yeah yeah yeah"
+          2. Phrase loop — same sentence repeated ≥3 times
+                          e.g. "So I'm going to go ahead and do that." × 15
+          3. Exact dup  — identical to the most recent committed text
+        """
+        import re
+        words = text.split()
+        if not words:
+            return False
+
+        # 1. Single-word loop
+        if len(words) >= 6:
+            counts: dict[str, int] = {}
+            for w in words:
+                key = w.lower().strip(".,!?;:")
+                counts[key] = counts.get(key, 0) + 1
+            top_word, top_count = max(counts.items(), key=lambda x: x[1])
+            if top_count >= 6 and top_count / len(words) > 0.5:
+                logger.warning(
+                    "[StreamingEngine] Hallucination (word loop %r ×%d) — dropped",
+                    top_word, top_count,
+                )
+                return True
+
+        # 2. Phrase/sentence loop
+        sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+        if len(sentences) >= 3:
+            phrase_counts: dict[str, int] = {}
+            for s in sentences:
+                key = s.lower()
+                phrase_counts[key] = phrase_counts.get(key, 0) + 1
+            top_phrase, top_count = max(phrase_counts.items(), key=lambda x: x[1])
+            if top_count >= 3:
+                logger.warning(
+                    "[StreamingEngine] Hallucination (phrase loop %r ×%d) — dropped",
+                    top_phrase[:60], top_count,
+                )
+                return True
+
+        # 3. Exact duplicate of last commit
+        if self._last_committed_text and text.strip().lower() == self._last_committed_text.strip().lower():
+            logger.warning("[StreamingEngine] Hallucination (duplicate commit) — dropped")
+            return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Speaker identification helpers
@@ -406,4 +465,5 @@ class StreamingEngine:
             except Exception as exc:
                 logger.warning("[StreamingEngine] Speaker identify error: %s", exc)
 
+        self._last_committed_text = text
         self.text_queue.put({"text": text, "speaker": speaker, "angle": angle})
