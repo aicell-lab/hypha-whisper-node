@@ -79,15 +79,19 @@ sudo systemctl enable --now hypha-whisper
 
 ## Service Management
 
+All commands below also start/stop/restart the watchdog automatically.
+
 | Task | Command |
 |------|---------|
 | Start | `sudo systemctl start hypha-whisper` |
 | Stop | `sudo systemctl stop hypha-whisper` |
 | Restart | `sudo systemctl restart hypha-whisper` |
 | Status | `systemctl status hypha-whisper` |
+| Watchdog status | `systemctl status hypha-whisper-watchdog` |
 | Live logs | `journalctl -u hypha-whisper -f` |
+| Watchdog logs | `journalctl -u hypha-whisper-watchdog -f` |
 | Last 100 lines | `journalctl -u hypha-whisper -n 100` |
-| Disable autostart | `sudo systemctl disable hypha-whisper` |
+| Disable autostart | `sudo systemctl disable hypha-whisper hypha-whisper-watchdog` |
 
 Logs look like:
 

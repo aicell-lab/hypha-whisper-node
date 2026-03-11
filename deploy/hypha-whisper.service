@@ -2,7 +2,7 @@
 Description=Hypha Whisper Node — real-time speech-to-text edge service
 Documentation=https://github.com/reef-imaging/hypha-whisper-node
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target hypha-whisper-watchdog.service
 
 [Service]
 Type=simple

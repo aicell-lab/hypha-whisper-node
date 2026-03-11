@@ -24,7 +24,7 @@ Requires USB device read/write access:
 """
 
 import logging
-import statistics
+import math
 import struct
 import threading
 import time
@@ -35,9 +35,22 @@ logger = logging.getLogger(__name__)
 
 _VENDOR_ID  = 0x2886
 _PRODUCT_ID = 0x0018
-_POLL_INTERVAL = 0.1   # seconds
-_HISTORY_LEN   = 20    # keep last 20 readings (2 s at 100 ms polling)
-_DOA_ADDR      = 21    # DOAANGLE parameter index in ReSpeaker firmware
+_POLL_INTERVAL_ACTIVE = 0.1   # seconds — used during active speech
+_POLL_INTERVAL_IDLE   = 0.5   # seconds — used during silence
+_HISTORY_LEN          = 20    # keep last 20 readings (2 s at 100 ms polling)
+_DOA_ADDR             = 21    # DOAANGLE parameter index in ReSpeaker firmware
+
+
+def _circular_mean(angles_deg: list) -> int:
+    """Return circular mean of a list of angles (degrees, 0–359).
+
+    Correct near the 0°/360° wraparound — unlike statistics.mean/median.
+    Example: _circular_mean([350, 10]) == 0 (not 180).
+    """
+    sin_sum = sum(math.sin(math.radians(a)) for a in angles_deg)
+    cos_sum = sum(math.cos(math.radians(a)) for a in angles_deg)
+    mean = math.degrees(math.atan2(sin_sum, cos_sum)) % 360
+    return int(round(mean))
 
 
 class DOAReader:
@@ -58,6 +71,7 @@ class DOAReader:
         self._history: deque = deque(maxlen=_HISTORY_LEN)
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._poll_interval = _POLL_INTERVAL_ACTIVE  # adjusted by set_active()
 
         self._init_device()
 
@@ -109,8 +123,8 @@ class DOAReader:
         self._thread = threading.Thread(target=self._poll_loop, daemon=True,
                                         name="doa-reader")
         self._thread.start()
-        logger.info("[DOAReader] USB polling thread started (interval=%.0f ms)",
-                    _POLL_INTERVAL * 1000)
+        logger.info("[DOAReader] USB polling thread started (active=%.0f ms, idle=%.0f ms)",
+                    _POLL_INTERVAL_ACTIVE * 1000, _POLL_INTERVAL_IDLE * 1000)
 
     def stop(self) -> None:
         """Stop the DOA polling thread and release the USB device."""
@@ -133,7 +147,7 @@ class DOAReader:
             if angle is not None:
                 with self._lock:
                     self._history.append((time.monotonic(), angle))
-            self._stop_event.wait(_POLL_INTERVAL)
+            self._stop_event.wait(self._poll_interval)
 
     # ------------------------------------------------------------------
     # USB read
@@ -155,26 +169,36 @@ class DOAReader:
     def enabled(self) -> bool:
         return self._enabled
 
+    def set_active(self, is_active: bool) -> None:
+        """Adjust poll rate based on speech activity.
+
+        Call with True when speech is detected (fast polling, 100 ms) and
+        False during silence (slow polling, 500 ms) to reduce USB overhead.
+        """
+        self._poll_interval = _POLL_INTERVAL_ACTIVE if is_active else _POLL_INTERVAL_IDLE
+
     def median_angle_since(self, t: float) -> Optional[int]:
-        """Return median DOA angle from readings since monotonic time *t*."""
+        """Return circular-mean DOA angle from readings since monotonic time *t*.
+
+        Uses circular mean instead of arithmetic median to correctly handle
+        the 0°/360° wraparound (e.g. angles 350° and 10° → 0°, not 180°).
+        """
         if not self._enabled:
             return None
+        # Copy under lock, compute outside to minimise lock contention.
         with self._lock:
             angles = [a for ts, a in self._history if ts >= t]
         if not angles:
             return None
-        return int(statistics.median(angles))
+        return _circular_mean(angles)
 
     def current_direction(self) -> Optional[int]:
-        """Return stable current angle (mode over last 5 readings)."""
+        """Return stable current angle (circular mean over last 5 readings)."""
         if not self._enabled:
             return None
+        # Copy under lock, compute outside.
         with self._lock:
             recent = list(self._history)[-5:]
         if len(recent) < 3:
             return None
-        angles = [a for _, a in recent]
-        try:
-            return statistics.mode(angles)
-        except statistics.StatisticsError:
-            return int(statistics.median(angles))
+        return _circular_mean([a for _, a in recent])

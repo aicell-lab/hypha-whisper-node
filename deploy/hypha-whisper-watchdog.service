@@ -2,7 +2,9 @@
 Description=Hypha Whisper Node — health watchdog
 Documentation=https://github.com/reef-imaging/hypha-whisper-node
 After=network-online.target hypha-whisper.service
-Wants=network-online.target hypha-whisper.service
+Wants=network-online.target
+BindsTo=hypha-whisper.service
+PartOf=hypha-whisper.service
 
 [Service]
 Type=simple
