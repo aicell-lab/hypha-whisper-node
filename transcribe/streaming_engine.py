@@ -327,6 +327,13 @@ class StreamingEngine:
                     logger.warning("[StreamingEngine] SpeakerRegistry init failed: %s", exc)
                     self._speaker_registry = None
 
+        # Turn off ReSpeaker LEDs on startup
+        try:
+            from pixel_ring import pixel_ring as _pr
+            _pr.off()
+        except Exception:
+            pass
+
         self._last_commit_time: float = 0.0
         self._last_committed_text: str = ""
 
