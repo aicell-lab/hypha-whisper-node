@@ -3,6 +3,15 @@
 Portable real-time speech-to-text node powered by Whisper and NVIDIA Jetson.
 Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the LocalAgreement streaming algorithm, and streams results through [Hypha RPC](https://pypi.org/project/hypha-rpc/).
 
+<p align="center">
+  <img src="https://img.shields.io/badge/%F0%9F%94%92%20Privacy-First-blue" alt="Privacy-First">
+  <img src="https://img.shields.io/badge/%F0%9F%8F%A0%20Local%20Processing-no%20cloud-green" alt="Local Processing">
+  <img src="https://img.shields.io/badge/%F0%9F%93%A1%20No%20Telemetry-none-orange" alt="No Telemetry">
+  <img src="https://img.shields.io/badge/%E2%9C%85%20Open%20Source-MIT-success" alt="Open Source MIT">
+</p>
+
+> **🔒 Privacy Guarantee:** Your voice is NEVER recorded or stored. All processing happens on-device. [Read our Privacy Policy →](PRIVACY.md)
+
 **It's live! Give it a try:**
 
 > [**🎙️ Open Live Transcript Viewer →**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/) &nbsp;&nbsp; [**📡 SSE Stream**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/transcript_feed) &nbsp;&nbsp; [**💚 Health**](https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health)&nbsp; 
@@ -36,6 +45,40 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 - **Direction annotation** — ReSpeaker USB DOA angle tags each utterance with the speaker's direction (e.g. `45°`); note: speaker grouping is best-effort only (see known limitations)
 - Auto-reconnect to Hypha on network loss (exponential backoff)
 - systemd service with watchdog (`WatchdogSec=180`) and auto-restart
+
+---
+
+## 🔒 Privacy & Security
+
+**hypha-whisper-node** is built with privacy as a foundational principle:
+
+| Privacy Feature | Status |
+|----------------|--------|
+| 🎤 **Audio Storage** | ❌ Never saved — audio is processed in real-time and immediately discarded |
+| 📝 **Transcript Storage** | ❌ Never persisted — transcripts exist only in memory |
+| ☁️ **Cloud Transcription** | ❌ None — all processing is on-device (Jetson GPU) |
+| 📡 **Telemetry** | ❌ None — no analytics or usage data collected |
+| 🔓 **Open Source** | ✅ 100% — fully auditable codebase |
+| 🏠 **Offline Mode** | ✅ Yes — works without any network connection |
+
+### How It Works
+```
+Microphone → Memory → Whisper (local) → SSE Stream → Discard
+                ↓            ↓              ↓
+           (temporary)   (no cloud)    (live only)
+```
+
+- **No audio files** are ever written to disk
+- **No transcript history** is stored — when the service restarts, everything is gone
+- **No voice data** is sent to external servers for transcription
+- Optional Hypha streaming only sends **text** (never audio) to your configured endpoint
+
+Run completely offline:
+```bash
+python3 main.py --server ""
+```
+
+📖 **[Read the full Privacy Policy →](PRIVACY.md)**
 
 ---
 
