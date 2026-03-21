@@ -336,7 +336,29 @@ Endpoints exposed via Hypha RPC:
 2. **Run unit tests**: `pytest -m "not hardware and not slow" -v`
 3. **Test on hardware** (if applicable): `./scripts/run_hardware_tests.sh`
 4. **Update CLAUDE.md** if completing planned tasks (mark `[x]`)
-5. **Commit** changes
+5. **Commit** changes with AI co-authors (see below)
+
+### AI Co-authored Commits 🤖
+
+To credit Kimi (and other AI assistants) as contributors, use co-authored commits:
+
+```bash
+# Quick commit with Kimi as co-author
+./scripts/git-commit-with-kimi.sh "Your commit message"
+
+# Or manually:
+git commit -m "Your message
+
+Co-authored-by: Kimi <kimi@moonshot.cn>"
+```
+
+**Enable automatic co-authoring for all commits in this repo:**
+```bash
+# The .gitmessage template is already configured
+git config commit.template .gitmessage
+```
+
+Now every commit will automatically include Kimi as a co-author. GitHub will recognize this and display 🤖 in the contributors graph.
 
 ### CI/CD
 - GitHub Actions runs on push/PR to `main`

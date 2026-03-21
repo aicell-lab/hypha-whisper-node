@@ -1,0 +1,8 @@
+# AI Assistant Co-authors
+# Source this in your shell or use with git commit templates
+
+# Kimi (Moonshot AI)
+KIMI_COAUTHOR="Co-authored-by: Kimi <kimi@moonshot.cn>"
+
+# Claude (Anthropic)
+CLAUDE_COAUTHOR="Co-authored-by: Claude <noreply@anthropic.com>"

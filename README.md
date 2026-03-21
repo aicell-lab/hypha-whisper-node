@@ -283,6 +283,16 @@ The `suspend_service` pytest fixture automatically stops `hypha-whisper` at the 
 
 ---
 
+## Contributors
+
+<a href="https://github.com/aicell-lab/hypha-whisper-node/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=aicell-lab/hypha-whisper-node" />
+</a>
+
+*Including AI assistants — [Claude](https://claude.ai) and [Kimi](https://kimi.moonshot.cn) contribute via co-authored commits.* 🤖
+
+---
+
 ## License
 
 MIT
