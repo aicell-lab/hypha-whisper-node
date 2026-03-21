@@ -49,8 +49,17 @@ REFERENCE = " ".join(
     re.sub(r"[^\w\s']", " ", REFERENCE_TEXT.lower()).split()  # hyphens → spaces
 )
 
-SPEAKER_NAME = "Dell AC511"   # substring match for output device
-MIC_NAME     = "ReSpeaker"   # substring match for input device
+# Speaker detection fallback list (in priority order)
+# 1. Dell AC511 USB SoundBar (original hardware)
+# 2. HDMI/DisplayPort audio (monitor speakers)
+# 3. Generic ALSA outputs
+SPEAKER_CANDIDATES = [
+    "Dell AC511",
+    "HDMI",
+    "DisplayPort", 
+    "alsa_output.pci",
+]
+MIC_NAME = "ReSpeaker"   # substring match for input device
 
 SPEAKER_RATE     = 44100
 SPEAKER_CHANNELS = 2
@@ -72,17 +81,39 @@ def _require_wav(path: Path) -> None:
         pytest.skip(f"Audio file not found: {path}. Place it in the tests/ directory.")
 
 
-def _find_output_device(name_sub: str) -> int:
-    """Return PyAudio device index for a named output device."""
+def _find_output_device(name_sub: str = None) -> tuple:
+    """Return PyAudio device index and name for an output device.
+    
+    If name_sub is provided, searches for that specific device.
+    Otherwise tries SPEAKER_CANDIDATES in order and returns the first match.
+    
+    Returns:
+        tuple: (device_index, device_name)
+    """
     pa = pyaudio.PyAudio()
     try:
+        devices = []
         for i in range(pa.get_device_count()):
             info = pa.get_device_info_by_index(i)
-            if name_sub in info.get("name", "") and info.get("maxOutputChannels", 0) > 0:
-                return i
+            if info.get("maxOutputChannels", 0) > 0:
+                devices.append((i, info.get("name", "")))
+        
+        # Search candidates in priority order
+        candidates = [name_sub] if name_sub else SPEAKER_CANDIDATES
+        for candidate in candidates:
+            if not candidate:
+                continue
+            for idx, name in devices:
+                if candidate in name:
+                    return idx, name
     finally:
         pa.terminate()
-    raise RuntimeError(f"Output device containing '{name_sub}' not found")
+    
+    available = [name for _, name in devices]
+    raise RuntimeError(
+        f"No output device found. Tried: {candidates}. "
+        f"Available: {available}"
+    )
 
 
 def _decode_audio_to_pcm(path: Path, rate: int, channels: int) -> np.ndarray:
@@ -132,17 +163,35 @@ def _word_error_rate(ref: str, hyp: str) -> float:
     return d[len(h)] / len(r)
 
 
-def _find_sd_output_device(name_sub: str) -> int:
-    """Return sounddevice device index for a named output device."""
+def _find_sd_output_device(name_sub: str = None) -> tuple:
+    """Return sounddevice device index and name for an output device.
+    
+    If name_sub is provided, searches for that specific device.
+    Otherwise tries SPEAKER_CANDIDATES in order and returns the first match.
+    
+    Returns:
+        tuple: (device_index, device_name)
+    """
     try:
         import sounddevice as sd
         devs = sd.query_devices()
-        for i, d in enumerate(devs):
-            if name_sub in d["name"] and d["max_output_channels"] > 0:
-                return i
+        
+        # Search candidates in priority order
+        candidates = [name_sub] if name_sub else SPEAKER_CANDIDATES
+        for candidate in candidates:
+            if not candidate:
+                continue
+            for i, d in enumerate(devs):
+                if candidate in d["name"] and d["max_output_channels"] > 0:
+                    return i, d["name"]
     except Exception as exc:
         raise RuntimeError(f"sounddevice not available: {exc}")
-    raise RuntimeError(f"sounddevice output device containing '{name_sub}' not found")
+    
+    available = [d["name"] for d in devs if d["max_output_channels"] > 0]
+    raise RuntimeError(
+        f"sounddevice output device not found. Tried: {candidates}. "
+        f"Available: {available}"
+    )
 
 
 def _play_mono_to_channel_sd(wav_path: Path, channel: int, device_idx: int,
@@ -181,7 +230,7 @@ def _extract_speaker(item) -> str:
 def test_speaker_playback_only():
     """Smoke test: verify speaker plays audio without error."""
     _require_wav(MALE_WAV)
-    speaker_idx = _find_output_device(SPEAKER_NAME)
+    speaker_idx, speaker_name = _find_output_device()
     pcm = _decode_audio_to_pcm(MALE_WAV, SPEAKER_RATE, SPEAKER_CHANNELS)
 
     pa = pyaudio.PyAudio()
@@ -202,7 +251,7 @@ def test_speaker_playback_only():
         stream.close()
         pa.terminate()
 
-    print(f"\n[test] Played {len(pcm)/SPEAKER_CHANNELS/SPEAKER_RATE:.1f}s audio through {SPEAKER_NAME}")
+    print(f"\n[test] Played {len(pcm)/SPEAKER_CHANNELS/SPEAKER_RATE:.1f}s audio through {speaker_name}")
 
 
 @pytest.mark.hardware
@@ -210,7 +259,7 @@ def test_speaker_playback_only():
 def test_mic_capture_rms():
     """Verify ReSpeaker captures non-silent audio during playback."""
     _require_wav(MALE_WAV)
-    speaker_idx = _find_output_device(SPEAKER_NAME)
+    speaker_idx, speaker_name = _find_output_device()
 
     from audio.capture import MicCapture
     mic = MicCapture(preferred_mic=MIC_NAME)
@@ -252,6 +301,7 @@ def test_mic_capture_rms():
 
     avg_rms = sum(rms_values) / len(rms_values) if rms_values else 0
     print(f"\n[test] Captured {len(rms_values)} chunks, avg RMS = {avg_rms:.4f}")
+    print(f"[test] Speaker used: {speaker_name}")
 
     assert avg_rms > 0.001, (
         f"RMS too low ({avg_rms:.5f}) — mic may not be picking up speaker audio. "
@@ -271,8 +321,8 @@ def test_acoustic_loopback_wer():
     from audio.capture import MicCapture
     from transcribe.streaming_engine import StreamingEngine
 
-    speaker_idx = _find_output_device(SPEAKER_NAME)
-    print(f"\n[test] Speaker: {SPEAKER_NAME} at index {speaker_idx}")
+    speaker_idx, speaker_name = _find_output_device()
+    print(f"\n[test] Speaker: {speaker_name} at index {speaker_idx}")
 
     pcm = _decode_audio_to_pcm(MALE_WAV, SPEAKER_RATE, SPEAKER_CHANNELS)
     audio_duration = len(pcm) / SPEAKER_CHANNELS / SPEAKER_RATE
@@ -501,8 +551,8 @@ def test_speaker_identification():
     from audio.capture import MicCapture
     from transcribe.streaming_engine import StreamingEngine
 
-    sd_device_idx = _find_sd_output_device(SPEAKER_NAME)
-    print(f"\n[test] sounddevice output: index={sd_device_idx}")
+    sd_device_idx, speaker_name = _find_sd_output_device()
+    print(f"\n[test] sounddevice output: {speaker_name} at index={sd_device_idx}")
 
     mic = MicCapture(preferred_mic=MIC_NAME)
     engine = StreamingEngine(model_name="small.en", use_vac=True,
@@ -622,8 +672,8 @@ def test_speaker_stability_under_variation():
     from audio.capture import MicCapture
     from transcribe.streaming_engine import StreamingEngine
 
-    sd_device_idx = _find_sd_output_device(SPEAKER_NAME)
-    print(f"\n[stability] sounddevice output: index={sd_device_idx}")
+    sd_device_idx, speaker_name = _find_sd_output_device()
+    print(f"\n[stability] sounddevice output: {speaker_name} at index={sd_device_idx}")
 
     failures: list = []
     all_results: list = []

@@ -1,5 +1,6 @@
 # hypha-whisper-node dependencies
-# Jetson Orin Nano — JetPack 6.2 (L4T R36.5), CUDA 12.6, Python 3.10
+# Supports: Jetson Orin Nano, Jetson AGX Orin 64GB
+# JetPack 6.x (L4T R36.x), CUDA 12.x, Python 3.10
 #
 # Step 1 — system packages (requires sudo):
 #   sudo apt-get install -y python3-pip python3-venv portaudio19-dev ffmpeg

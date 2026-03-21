@@ -8,11 +8,11 @@ PartOf=hypha-whisper.service
 
 [Service]
 Type=simple
-User=reef-orinnano
-WorkingDirectory=/home/reef-orinnano/workspace/hypha-whisper-node
-Environment="PATH=/home/reef-orinnano/.local/bin:/usr/local/bin:/usr/bin:/bin"
+User=%USER%
+WorkingDirectory=%WORKING_DIR%
+Environment="PATH=%HOME%/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-ExecStart=/usr/bin/python3 /home/reef-orinnano/workspace/hypha-whisper-node/watchdog.py
+ExecStart=/usr/bin/python3 %WORKING_DIR%/watchdog.py
 
 Restart=always
 RestartSec=10

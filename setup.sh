@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# setup.sh — one-shot install for hypha-whisper-node on Jetson Orin Nano
-# JetPack 6.2 (L4T R36.5), CUDA 12.6, Python 3.10
+# setup.sh — one-shot install for hypha-whisper-node on Jetson devices
+# Supports: Jetson Orin Nano, Jetson AGX Orin (64GB), JetPack 6.x, CUDA 12.x, Python 3.10
 #
 # Usage:
 #   chmod +x setup.sh
 #   sudo ./setup.sh          # full install (system packages + Python deps)
 #   ./setup.sh --no-sudo     # Python-only (skip apt steps; system pkgs must be pre-installed)
+#
+# Supported hardware:
+#   - Microphone: ReSpeaker 4 Mic Array v2.0 (USB)
+#   - Speaker: Dell AC511 USB SoundBar OR HDMI/DisplayPort monitor audio
 #
 # After install, configure secrets:
 #   sudo mkdir -p /etc/hypha-whisper
@@ -15,6 +19,9 @@
 #   HYPHA_WORKSPACE_TOKEN=my-token
 #   EOF
 #   sudo chmod 600 /etc/hypha-whisper/config.env
+#
+# To install systemd service:
+#   sudo ./setup.sh --install-service
 
 set -euo pipefail
 
@@ -23,8 +30,10 @@ PYTORCH_WHEEL="https://developer.download.nvidia.com/compute/redist/jp/v61/pytor
 CUSPARSELT_DEB="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/sbsa/libcusparselt0_0.6.3.2-1_arm64.deb"
 
 NO_SUDO=false
+INSTALL_SERVICE=false
 for arg in "$@"; do
   [[ "$arg" == "--no-sudo" ]] && NO_SUDO=true
+  [[ "$arg" == "--install-service" ]] && INSTALL_SERVICE=true
 done
 
 info()  { echo "[setup] $*"; }
@@ -115,14 +124,53 @@ ENVEOF
 fi
 
 # ---------------------------------------------------------------------------
+# 7 — Install systemd service (optional)
+# ---------------------------------------------------------------------------
+if $INSTALL_SERVICE; then
+  if [[ "$EUID" -ne 0 ]]; then
+    fatal "--install-service requires sudo"
+  fi
+  info "Installing systemd services..."
+  
+  # Get current user (the one who ran sudo)
+  SERVICE_USER="${SUDO_USER:-$USER}"
+  SERVICE_HOME="$(eval echo ~$SERVICE_USER)"
+  WORKING_DIR="$SCRIPT_DIR"
+  
+  # Process service template files
+  for service in hypha-whisper.service hypha-whisper-watchdog.service; do
+    if [[ -f "$SCRIPT_DIR/deploy/$service" ]]; then
+      info "Processing $service..."
+      sed -e "s|%USER%|$SERVICE_USER|g" \
+          -e "s|%HOME%|$SERVICE_HOME|g" \
+          -e "s|%WORKING_DIR%|$WORKING_DIR|g" \
+          "$SCRIPT_DIR/deploy/$service" > "/etc/systemd/system/$service"
+      info "Installed /etc/systemd/system/$service"
+    fi
+  done
+  
+  systemctl daemon-reload
+  info "Systemd services installed."
+  info ""
+  info "To start the service:"
+  info "  sudo systemctl enable --now hypha-whisper"
+  info ""
+  info "To check status:"
+  info "  journalctl -u hypha-whisper -f"
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 info "Setup complete."
 info ""
 info "Next steps:"
 info "  1. Edit /etc/hypha-whisper/config.env with your Hypha credentials"
-info "  2. Install the systemd service:"
-info "       sudo cp $SCRIPT_DIR/deploy/hypha-whisper.service /etc/systemd/system/"
-info "       sudo systemctl daemon-reload"
-info "       sudo systemctl enable --now hypha-whisper"
-info "  3. Check status: journalctl -u hypha-whisper -f"
+if ! $INSTALL_SERVICE; then
+  info "  2. Install the systemd service:"
+  info "       sudo ./setup.sh --install-service"
+  info "  3. Check status: journalctl -u hypha-whisper -f"
+else
+  info "  2. Start the service: sudo systemctl enable --now hypha-whisper"
+  info "  3. Check status: journalctl -u hypha-whisper -f"
+fi

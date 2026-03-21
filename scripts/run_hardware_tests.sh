@@ -12,7 +12,7 @@
 #   ./scripts/run_hardware_tests.sh -k "wer or rms"  # multiple filters
 #
 # Prerequisites:
-#   - Dell AC511 USB SoundBar plugged in
+#   - Speaker: Dell AC511 USB SoundBar OR HDMI/DisplayPort monitor speakers
 #   - ReSpeaker 4 Mic Array plugged in
 #   - tests/fixtures/darkness.mp3 present (auto-downloaded if missing)
 #   - sudo access to systemctl (or run as root)
@@ -78,7 +78,14 @@ pa.terminate()
 
 missing = []
 respeaker = next((n for n in devices if "ReSpeaker" in n), None)
-dell = next((n for n in devices if "Dell AC511" in n), None)
+
+# Speaker detection with fallback (USB SoundBar or HDMI/DP audio)
+speaker_candidates = ["Dell AC511", "HDMI", "DisplayPort", "alsa_output.pci"]
+speaker_name = None
+for candidate in speaker_candidates:
+    speaker_name = next((n for n in devices if candidate in n), None)
+    if speaker_name:
+        break
 
 if respeaker:
     print(f"  ✓ ReSpeaker: {respeaker}")
@@ -86,11 +93,11 @@ else:
     print("  ✗ ReSpeaker 4 Mic Array NOT FOUND")
     missing.append("ReSpeaker")
 
-if dell:
-    print(f"  ✓ Speaker:   {dell}")
+if speaker_name:
+    print(f"  ✓ Speaker:   {speaker_name}")
 else:
-    print("  ✗ Dell AC511 USB SoundBar NOT FOUND")
-    missing.append("Dell AC511")
+    print("  ✗ No speaker found (tried: USB SoundBar, HDMI, DisplayPort)")
+    missing.append("Speaker")
 
 if missing:
     print(f"\n[setup] Missing hardware: {missing}. Plug in and retry.")

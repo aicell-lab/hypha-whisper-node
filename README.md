@@ -1,6 +1,6 @@
 # hypha-whisper-node
 
-Portable real-time speech-to-text node powered by Whisper and Jetson Orin Nano.
+Portable real-time speech-to-text node powered by Whisper and NVIDIA Jetson.
 Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the LocalAgreement streaming algorithm, and streams results through [Hypha RPC](https://pypi.org/project/hypha-rpc/).
 
 **It's live! Give it a try:**
@@ -14,13 +14,15 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 
 | Component | Details |
 |---|---|
-| Compute | Jetson Orin Nano (JetPack 6.2, CUDA 12.6) |
+| Compute | Jetson Orin Nano **or** Jetson AGX Orin 64GB (JetPack 6.x, CUDA 12.x) |
 | Microphone | ReSpeaker 4 Mic Array v2.0 (UAC1.0, 16 kHz, beamformed ch0) |
-| Speaker (test) | Dell AC511 USB SoundBar |
+| Speaker (test) | Dell AC511 USB SoundBar **or** HDMI/DisplayPort monitor speakers |
 | Power | USB-C PD power bank |
 | Enclosure | 3D printed shell (ventilation + antenna ports) |
 
 **Mic auto-detection:** ReSpeaker is tried first; falls back to HIK 1080P Camera if not found. Override with `--mic "name-substring"`.
+
+**Speaker auto-detection:** Tests use Dell AC511 USB SoundBar first, falling back to HDMI/DisplayPort monitor speakers if not found.
 
 ---
 
@@ -37,7 +39,9 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 
 ---
 
-## Whisper Benchmarks (Jetson Orin Nano, 2 s audio, GPU)
+## Whisper Benchmarks
+
+### Jetson Orin Nano (2 s audio, GPU)
 
 | Model | Avg latency | Load time |
 |-------|------------|-----------|
@@ -75,6 +79,10 @@ HYPHA_WORKSPACE_TOKEN=my-token
 ### Install the systemd service
 
 ```bash
+# Option 1: Auto-install with setup script (recommended)
+sudo ./setup.sh --install-service
+
+# Option 2: Manual install
 sudo cp deploy/hypha-whisper.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now hypha-whisper
@@ -242,7 +250,8 @@ Plays pre-recorded reference audio (`tests/test-audio-male.wav`) through the Del
 
 ```bash
 # One-time: allow passwordless sudo for service management during tests
-echo "reef-orinnano ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \
+# Replace <username> with your actual username
+echo "<username> ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \
     | sudo tee /etc/sudoers.d/hypha-whisper-tests
 
 # Run all hardware tests (auto stops/restarts hypha-whisper service)
@@ -257,7 +266,7 @@ The `suspend_service` pytest fixture automatically stops `hypha-whisper` at the 
 
 | Test | What it checks |
 |------|---------------|
-| `test_speaker_playback_only` | Dell AC511 plays without error |
+| `test_speaker_playback_only` | Speaker plays without error (USB SoundBar or HDMI/DP) |
 | `test_mic_capture_rms` | ReSpeaker picks up speaker audio (RMS > 0.001) |
 | `test_acoustic_loopback_wer` | Full pipeline WER < 30% against reference transcript |
 | `test_speaker_identification` | Left vs right channel → 2 distinct angle labels |

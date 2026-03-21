@@ -8,7 +8,7 @@ This document provides essential context for AI coding agents working on the hyp
 
 **hypha-whisper-node** is a portable, real-time speech-to-text edge node that:
 1. Captures audio via ReSpeaker 4 Mic Array (beamformed, hardware noise suppression) or HIK camera mic
-2. Transcribes locally using OpenAI Whisper (on Jetson Orin Nano, GPU)
+2. Transcribes locally using OpenAI Whisper (on NVIDIA Jetson GPU)
 3. Streams transcripts via Hypha RPC to remote agents/dashboards using Server-Sent Events (SSE)
 
 The system runs continuously as a systemd service, providing a live transcript viewer and SSE endpoints via Hypha's ASGI service infrastructure.
@@ -30,10 +30,12 @@ The system runs continuously as a systemd service, providing a live transcript v
 | Testing | pytest |
 
 ### Target Hardware
-- **Compute**: NVIDIA Jetson Orin Nano (JetPack 6.2, L4T R36.5, CUDA 12.6)
+- **Compute**: 
+  - NVIDIA Jetson Orin Nano (JetPack 6.2, L4T R36.5, CUDA 12.6) — 8GB RAM
+  - NVIDIA Jetson AGX Orin 64GB (JetPack 6.x, L4T R36.x, CUDA 12.x) — 64GB RAM, 275 TOPS
 - **Microphone**: ReSpeaker 4 Mic Array v2.0 (6-channel UAC1.0, 16 kHz, beamformed ch0)
 - **Fallback Mic**: HIK 1080P Camera USB microphone
-- **Test Speaker**: Dell AC511 USB SoundBar (for hardware loopback tests)
+- **Test Speaker**: Dell AC511 USB SoundBar **or** HDMI/DisplayPort monitor speakers (with auto-detection fallback)
 
 ---
 
@@ -86,8 +88,8 @@ hypha-whisper-node/
 
 ## Build and Installation
 
-### Prerequisites (Jetson Orin Nano)
-- JetPack 6.2 (L4T R36.5) with CUDA 12.6
+### Prerequisites
+- JetPack 6.x (L4T R36.x) with CUDA 12.x
 - Python 3.10
 - System packages: `portaudio19-dev`, `ffmpeg`, `libsndfile1`
 
@@ -107,8 +109,9 @@ sudo nano /etc/hypha-whisper/config.env
 #   HYPHA_WORKSPACE_TOKEN=my-token
 
 # 3. Install systemd service
-sudo cp deploy/hypha-whisper.service /etc/systemd/system/
-sudo systemctl daemon-reload
+sudo ./setup.sh --install-service
+
+# 4. Start the service
 sudo systemctl enable --now hypha-whisper
 ```
 
@@ -123,9 +126,9 @@ sudo systemctl enable --now hypha-whisper
 
 3. **libcusparseLt missing on JP6.2**: Extract from NVIDIA CUDA sbsa repo `.deb` into `~/.local/lib/` and add to `LD_LIBRARY_PATH`.
 
-4. **LD_LIBRARY_PATH in systemd**: The service file sets:
+4. **LD_LIBRARY_PATH in systemd**: The service file sets (automatically configured by `setup.sh --install-service`):
    ```
-   Environment="LD_LIBRARY_PATH=/home/reef-orinnano/.local/lib:/usr/local/cuda/lib64:/usr/local/cuda-12.6/lib64"
+   Environment="LD_LIBRARY_PATH=/home/<user>/.local/lib:/usr/local/cuda/lib64:/usr/local/cuda-12.6/lib64"
    ```
 
 ---
@@ -174,10 +177,11 @@ pip install -r requirements-dev.txt
 pytest tests/ -m "not hardware and not integration and not slow" -v
 ```
 
-### Hardware Tests (requires ReSpeaker + Dell AC511)
+### Hardware Tests (requires ReSpeaker + Speaker: USB SoundBar or HDMI/DP)
 ```bash
 # One-time: passwordless sudo for service management
-echo "reef-orinnano ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \
+# Replace <username> with your actual username
+echo "<username> ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/systemctl stop hypha-whisper" \
     | sudo tee /etc/sudoers.d/hypha-whisper-tests
 
 # Run via script (handles service stop/start)
@@ -190,7 +194,7 @@ pytest tests/test_hardware_loopback.py -m hardware -v
 ### Hardware Test Coverage
 | Test | Description |
 |------|-------------|
-| `test_speaker_playback_only` | Dell AC511 plays without error |
+| `test_speaker_playback_only` | Speaker plays without error (USB SoundBar or HDMI/DP) |
 | `test_mic_capture_rms` | ReSpeaker picks up speaker audio (RMS > 0.001) |
 | `test_acoustic_loopback_wer` | Full pipeline WER < 30% against reference transcript |
 | `test_speaker_identification` | Left vs right channel → 2 distinct angle labels |
@@ -382,3 +386,4 @@ doa.stop()
 - [Hypha RPC](https://pypi.org/project/hypha-rpc/) — RPC framework for bioimaging
 - [ReSpeaker Mic Array v2.0](https://wiki.seeedstudio.com/ReSpeaker_Mic_Array_v2.0/) — Hardware docs
 - [Jetson Orin Nano](https://developer.nvidia.com/embedded/jetson-orin-nano-developer-kit) — NVIDIA docs
+- [Jetson AGX Orin](https://developer.nvidia.com/embedded/jetson-agx-orin-developer-kit) — NVIDIA docs

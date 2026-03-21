@@ -6,16 +6,16 @@ Wants=network-online.target hypha-whisper-watchdog.service
 
 [Service]
 Type=simple
-User=reef-orinnano
-WorkingDirectory=/home/reef-orinnano/workspace/hypha-whisper-node
+User=%USER%
+WorkingDirectory=%WORKING_DIR%
 
 # Load secrets from config file (HYPHA_SERVER, HYPHA_WORKSPACE, HYPHA_WORKSPACE_TOKEN)
 EnvironmentFile=-/etc/hypha-whisper/config.env
 
 # libcusparseLt and CUDA libs are not in the default ld path on JP6.2
-Environment="LD_LIBRARY_PATH=/home/reef-orinnano/.local/lib:/usr/local/cuda/lib64:/usr/local/cuda-12.6/lib64"
+Environment="LD_LIBRARY_PATH=%HOME%/.local/lib:/usr/local/cuda/lib64:/usr/local/cuda-12.6/lib64"
 
-ExecStart=/usr/bin/python3 /home/reef-orinnano/workspace/hypha-whisper-node/main.py
+ExecStart=/usr/bin/python3 %WORKING_DIR%/main.py
 
 # Auto-restart on crash
 Restart=always
