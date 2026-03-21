@@ -10,7 +10,9 @@ Must run as root (or a user with sudo rights) so it can restart the main service
 Health endpoint: https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health
 """
 
+import argparse
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -18,11 +20,13 @@ import time
 import httpx
 
 HEALTH_URL = "https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health"
-SERVICE_NAME = "hypha-whisper"
+SERVICE_NAME = os.environ.get("SERVICE_NAME", "hypha-whisper")
 CHECK_INTERVAL = 60    # seconds between health checks
 TIMEOUT = 15           # seconds for HTTP request
 STOP_WAIT = 20         # seconds after stop before start, to let Hypha deregister
 FAILURE_THRESHOLD = 2  # consecutive failures required before restarting
+
+USE_USER_MODE = False  # Set to True for user-level systemd (--user flag)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,8 +55,9 @@ def restart_service():
     """Stop then start the systemd service, with a pause between so Hypha can deregister."""
     logging.info("Restarting service: %s", SERVICE_NAME)
     for action in ("stop", "start"):
+        cmd = ["systemctl", "--user", action, SERVICE_NAME] if USE_USER_MODE else ["sudo", "systemctl", action, SERVICE_NAME]
         result = subprocess.run(
-            ["sudo", "systemctl", action, SERVICE_NAME],
+            cmd,
             capture_output=True,
             text=True,
         )
@@ -69,7 +74,13 @@ def restart_service():
 
 
 def main():
-    logging.info("Watchdog started. Monitoring %s every %ss", HEALTH_URL, CHECK_INTERVAL)
+    global USE_USER_MODE
+    parser = argparse.ArgumentParser(description="Health watchdog for hypha-whisper")
+    parser.add_argument("--user", action="store_true", help="Use user-level systemd (systemctl --user)")
+    args = parser.parse_args()
+    USE_USER_MODE = args.user
+    
+    logging.info("Watchdog started. Monitoring %s every %ss (user mode: %s)", HEALTH_URL, CHECK_INTERVAL, USE_USER_MODE)
     failures = 0
     while True:
         time.sleep(CHECK_INTERVAL)  # always wait first — gives service time to start up

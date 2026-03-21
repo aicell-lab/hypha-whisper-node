@@ -57,6 +57,10 @@ _subscribers: set = set()
 _broadcast_task = None
 _CLEAR_SENTINEL = {"_clear": True}
 
+# Client connection state callbacks (set by HyphaClient)
+_on_first_client: callable = None
+_on_last_client: callable = None
+
 # ---------------------------------------------------------------------------
 # Log streaming — captures all Python logging records and fans out to SSE
 # ---------------------------------------------------------------------------
@@ -383,8 +387,17 @@ async def transcript_feed():
     async def sse_gen():
         client_q: asyncio.Queue = asyncio.Queue(maxsize=256)
         _subscribers.add(client_q)
+        is_first = len(_subscribers) == 1
         _ensure_broadcast_loop()
         logger.info("[transcript_feed] Client connected (%d total)", len(_subscribers))
+        
+        # Notify on first client connection
+        if is_first and _on_first_client is not None:
+            try:
+                _on_first_client()
+            except Exception as exc:
+                logger.error("[transcript_feed] _on_first_client callback error: %s", exc)
+        
         try:
             while True:
                 try:
@@ -401,9 +414,17 @@ async def transcript_feed():
             _subscribers.discard(client_q)
             remaining = len(_subscribers)
             logger.info("[transcript_feed] Client disconnected (%d remaining)", remaining)
-            if remaining == 0 and _engine is not None:
-                _engine.init_session()
-                logger.info("[transcript_feed] Last client disconnected — engine session reset")
+            
+            # Notify on last client disconnection
+            if remaining == 0:
+                if _on_last_client is not None:
+                    try:
+                        _on_last_client()
+                    except Exception as exc:
+                        logger.error("[transcript_feed] _on_last_client callback error: %s", exc)
+                if _engine is not None:
+                    _engine.init_session()
+                    logger.info("[transcript_feed] Last client disconnected — engine session reset")
 
     return StreamingResponse(sse_gen(), media_type="text/event-stream")
 
@@ -526,9 +547,11 @@ class HyphaClient:
     """
 
     def __init__(self, server_url: str, token: str, streaming_engine,
-                 workspace: str = ""):
+                 workspace: str = "",
+                 on_first_client: callable = None,
+                 on_last_client: callable = None):
         global _engine, _text_queue, _start_time, _subscribers, _broadcast_task
-        global _log_subscribers, _log_broadcast_task
+        global _log_subscribers, _log_broadcast_task, _on_first_client, _on_last_client
         self.server_url = server_url.rstrip("/")
         self.workspace = workspace
         self.token = token
@@ -548,6 +571,9 @@ class HyphaClient:
         if _log_broadcast_task is not None and not _log_broadcast_task.done():
             _log_broadcast_task.cancel()
         _log_broadcast_task = None
+        # Store callbacks for client connection state changes
+        _on_first_client = on_first_client
+        _on_last_client = on_last_client
 
     # ------------------------------------------------------------------
     # Public entry point

@@ -26,5 +26,6 @@ librosa>=0.10.0                 # required by whisper_online.py
 pyyaml==6.0.3
 hypha-rpc==0.21.31
 pyaudio==0.2.14
+pyusb>=1.2.1                    # required for ReSpeaker DOA (Direction of Arrival) via USB
 fastapi==0.115.12
 uvicorn==0.34.0

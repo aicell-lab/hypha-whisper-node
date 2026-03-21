@@ -55,6 +55,22 @@ if ! $NO_SUDO; then
 fi
 
 # ---------------------------------------------------------------------------
+# 1b — ReSpeaker USB permissions (udev rule for DOA access)
+# ---------------------------------------------------------------------------
+if ! $NO_SUDO; then
+  UDEV_RULE="SUBSYSTEM==\"usb\", ATTR{idVendor}==\"2886\", ATTR{idProduct}==\"0018\", MODE=\"0666\", GROUP=\"plugdev\""
+  if [[ ! -f /etc/udev/rules.d/99-respeaker.rules ]]; then
+    info "Installing ReSpeaker udev rule for USB DOA access..."
+    echo "$UDEV_RULE" > /etc/udev/rules.d/99-respeaker.rules
+    udevadm control --reload-rules
+    udevadm trigger
+    info "ReSpeaker udev rule installed."
+  else
+    info "ReSpeaker udev rule already exists, skipping."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 2 — pip (user-level)
 # ---------------------------------------------------------------------------
 if ! python3 -m pip --version &>/dev/null; then
