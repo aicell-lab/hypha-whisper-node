@@ -445,7 +445,8 @@ class StreamingEngine:
                 text = text.strip() if text else ""
                 if text and not self._is_hallucination(text):
                     self._emit_item(text, self._last_commit_time)
-                    logger.info("[StreamingEngine] Pre-flush committed: %r", text)
+                    # Note: Transcript text is NOT logged for privacy
+                    logger.info("[StreamingEngine] Pre-flush committed (text not logged)")
         except Exception as exc:
             logger.warning("[StreamingEngine] pre-flush process_iter raised: %s", exc)
 
@@ -457,7 +458,8 @@ class StreamingEngine:
         text = text.strip() if text else ""
         if text and not self._is_hallucination(text):
             self._emit_item(text, self._last_commit_time)
-            logger.info("[StreamingEngine] Flushed final: %r", text)
+            # Note: Transcript text is NOT logged for privacy
+            logger.info("[StreamingEngine] Flushed final (text not logged)")
 
         return text if text else None
 
@@ -486,7 +488,8 @@ class StreamingEngine:
             commit_time = self._last_commit_time
             self._last_commit_time = time.monotonic()
             self._emit_item(text, commit_time)
-            logger.debug("[StreamingEngine] Committed [%.2f–%.2f]: %r", begin or 0, end or 0, text)
+            # Note: Transcript text is NOT logged for privacy (even at debug level)
+            logger.debug("[StreamingEngine] Committed [%.2f–%.2f] (text not logged)", begin or 0, end or 0)
             return text
         return None
 

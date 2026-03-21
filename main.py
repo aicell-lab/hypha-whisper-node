@@ -141,7 +141,9 @@ async def run_offline(engine, shutdown: asyncio.Event):
                 loop.run_in_executor(None, engine.text_queue.get, True, 0.5),
                 timeout=1.0,
             )
-            print(f"[transcript] {text}", flush=True)
+            # Note: Transcript text is NOT logged for privacy
+            # It is only streamed via SSE to connected clients
+            print("[transcript] <received>", flush=True)
         except (asyncio.TimeoutError, queue.Empty):
             continue
 
@@ -252,7 +254,8 @@ async def main():
     # Flush any remaining audio context from the streaming engine.
     final = await loop.run_in_executor(None, engine.finish_session)
     if final:
-        logger.info("[main] Final transcript: %s", final)
+        # Note: Final transcript text is NOT logged for privacy
+        logger.info("[main] Final transcript flushed (not logged for privacy)")
 
     # Only stop mic if it was started
     if listening.is_set():

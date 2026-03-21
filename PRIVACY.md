@@ -39,10 +39,10 @@ The system produces logs for operational monitoring. These logs contain:
 |--------|------------|
 | ✅ System startup/shutdown events | ❌ Audio recordings |
 | ✅ Connection status to Hypha server | ❌ Raw audio buffers |
-| ✅ Transcript text (in-memory, for streaming) | ❌ Voice biometric data |
-| ✅ Speaker direction angles (e.g., `45°`) | ❌ Historical transcripts |
-| ✅ Model loading status | ❌ Any persistent user data |
-| ✅ Error messages | |
+| ✅ Transcript **metadata** (timestamp, speaker angle) | ❌ Transcript **text content** |
+| ✅ Speaker direction angles (e.g., `45°`) | ❌ Voice biometric data |
+| ✅ Model loading status | ❌ Historical transcripts |
+| ✅ Error messages | ❌ Any persistent user data |
 
 ### Log Destinations
 When running as a systemd service, logs go to:

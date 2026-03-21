@@ -347,7 +347,9 @@ async def _broadcast_loop():
                 timeout=15.0,
             )
             payload = _item_to_json(item)
-            logger.info("[transcript] %s", payload)
+            # Note: Transcript payload is NOT logged for privacy
+            # It is only sent to connected SSE clients
+            logger.info("[transcript] Transcript sent to %d client(s)", len(_subscribers))
             for q in list(_subscribers):
                 try:
                     q.put_nowait(item)

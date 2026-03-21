@@ -155,8 +155,10 @@ Logs look like:
 2026-03-09T12:55:19 INFO [MicCapture] Found 'ReSpeaker 4 Mic Array...' at device index 24 (capture ch=6, use ch=0)
 2026-03-09T12:55:25 INFO [StreamingEngine] Ready
 2026-03-09T12:55:31 INFO [hypha] Connected to https://hypha.aicell.io (workspace: reef-imaging)
-2026-03-09T12:55:54 INFO [transcript] hello, are you there?
+2026-03-09T12:55:54 INFO [transcript] Transcript sent to 1 client(s)
 ```
+
+> **🔒 Privacy Note:** Transcript text is intentionally NOT logged. Only metadata (timestamps, client counts, connection events) appears in logs.
 
 If the Hypha server drops, the service reconnects automatically (exponential backoff, max 60 s).
 
