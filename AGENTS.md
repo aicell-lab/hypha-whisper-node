@@ -110,10 +110,14 @@ sudo nano /etc/hypha-whisper/config.env
 #   HYPHA_WORKSPACE=my-workspace
 #   HYPHA_WORKSPACE_TOKEN=my-token
 
-# 3. Install systemd service
+# 3. Install systemd service (system-level)
 sudo ./setup.sh --install-service
 
-# 4. Start the service
+# 4. Ensure no conflicting user-level services exist
+systemctl --user stop hypha-whisper 2>/dev/null || true
+systemctl --user disable hypha-whisper 2>/dev/null || true
+
+# 5. Start the service
 sudo systemctl enable --now hypha-whisper
 ```
 
@@ -320,10 +324,33 @@ curl -X POST \
 
 ## Deployment
 
-### systemd Units
+### systemd Units (System-Level Recommended)
+
+**Use system-level services** (installed to `/etc/systemd/system/`) rather than user-level services (`~/.config/systemd/user/`). System-level services are the officially supported approach:
+
 - **hypha-whisper.service**: Main service with `Restart=always`, `WatchdogSec=180`
 - **hypha-whisper-watchdog.service**: Separate health monitoring service
 - Relationship: `Wants=` and `BindsTo=` ensures watchdog lifecycle is tied to main service
+
+**Why system-level?**
+- Proper handling of hardware permissions (ReSpeaker USB DOA)
+- Secrets stored in `/etc/hypha-whisper/config.env` (secure, system-wide)
+- Consistent with Jetson/systemd best practices
+- Proper `LD_LIBRARY_PATH` for CUDA libraries
+
+**If you have legacy user-level services**, remove them to avoid conflicts:
+```bash
+# Stop and disable user-level services
+systemctl --user stop hypha-whisper hypha-whisper-watchdog
+systemctl --user disable hypha-whisper hypha-whisper-watchdog
+
+# Remove user-level service files
+rm -f ~/.config/systemd/user/hypha-whisper.service
+rm -f ~/.config/systemd/user/hypha-whisper-watchdog.service
+
+# Reload systemd
+systemctl --user daemon-reload
+```
 
 ### Watchdog Mechanism
 1. Application calls `sd_notify("WATCHDOG=1")` every ~10s
