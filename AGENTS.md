@@ -77,11 +77,6 @@ hypha-whisper-node/
 │   ├── hypha-whisper.service        # Main systemd unit
 │   └── hypha-whisper-watchdog.service  # Watchdog systemd unit
 │
-├── .agents/skills/              # OpenAI Codex agent skills
-│   └── hypha-whisper/           # Skill for agent integration
-│       ├── SKILL.md             # Skill definition
-│       └── agents/openai.yaml   # Codex app metadata
-│
 ├── docs/
 │   └── hardware.md              # Hardware setup guide
 │
@@ -441,63 +436,6 @@ print(f'DOA: {doa.current_direction()}°')
 doa.stop()
 "
 ```
-
----
-
-## Agent Skills
-
-The project includes an OpenAI Codex-compatible skill for agent integration, located at `.agents/skills/hypha-whisper/`.
-
-### Skill Files
-
-```
-.agents/skills/hypha-whisper/
-├── SKILL.md              # Skill definition and usage documentation
-└── agents/
-    └── openai.yaml       # Metadata for Codex app integration
-```
-
-### Using the Skill
-
-The skill enables AI agents to:
-1. **Transcribe audio files** via the `/transcribe` HTTP endpoint
-2. **Monitor live transcription** via the `/transcript_feed` SSE endpoint
-
-### Agent Integration Example
-
-Agents can use the skill to transcribe audio:
-
-```python
-# Example: Agent transcribing a meeting recording
-import requests
-
-def transcribe_audio(file_path: str, workspace: str = "reef-imaging") -> str:
-    \"\"\"Transcribe an audio file using the Hypha Whisper Node.\"\"\"
-    url = f"https://hypha.aicell.io/{workspace}/apps/hypha-whisper/transcribe"
-    
-    with open(file_path, "rb") as f:
-        response = requests.post(
-            url,
-            files={"file": f},
-            data={"language": "en", "response_format": "text"}
-        )
-        response.raise_for_status()
-        return response.text if response_format == "text" else response.json()["text"]
-
-# Usage
-transcript = transcribe_audio("meeting_recording.mp3")
-print(f"Meeting transcript: {transcript}")
-```
-
-### Deploying to OpenClowder Platform
-
-The skill follows the OpenAI Codex skills specification and can be deployed to platforms supporting the standard:
-
-1. The skill is auto-discoverable in the `.agents/skills/` directory
-2. Agents can invoke it explicitly with `$hypha-whisper` or implicitly based on task description
-3. The `openai.yaml` file provides UI metadata for the Codex app
-
-For more details, see the [OpenAI Codex Skills documentation](https://developers.openai.com/codex/skills).
 
 ---
 
