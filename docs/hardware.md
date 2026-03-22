@@ -1,101 +1,108 @@
-# Hardware Guide — Hypha Whisper Node
+# Hardware Setup Guide
 
-## Current Hardware
+## Microphone
 
-| Component | Model | Notes |
-|-----------|-------|-------|
-| Compute | NVIDIA Jetson Orin Nano (8 GB) | JetPack 6.2, L4T R36.5, CUDA 12.6 |
-| Microphone | HIKVISION USB camera (built-in mic) | USB 2.0, mono, 16 kHz |
-| Storage | microSD or NVMe (recommended) | NVMe gives faster model load |
-| Power | 19 V DC barrel jack | Jetson Orin Nano dev kit PSU |
+### Primary: ReSpeaker 4 Mic Array (USB)
 
----
+**Model:** Seeed Studio ReSpeaker USB 4-Mic Array (v2.0 or v3.0)
 
-## USB Audio — HIKVISION Camera
+**Features:**
+- 4 PDM microphones in circular array (90° intervals)
+- Radius: 46.5mm
+- USB UAC1.0 audio interface
+- Requires **6-channel firmware** for multi-channel DOA
 
-### Physical Connection
+**Firmware:**
+- Default: 1-channel (beamformed output only)
+- Required: 6-channel firmware for raw mic access
 
-1. Connect the HIKVISION camera USB cable to any USB-A port on the Jetson.
-2. The camera enumerates two USB interfaces: video (UVC) and audio (UAC).
-3. No additional drivers are required — the kernel UAC driver handles it.
+**Channel Layout (6-channel firmware):**
+| Channel | Content | Use |
+|---------|---------|-----|
+| 0 | Beamformed audio | ASR input |
+| 1 | Raw mic 1 (0°) | DOA estimation |
+| 2 | Raw mic 2 (90°) | DOA estimation |
+| 3 | Raw mic 3 (180°) | DOA estimation |
+| 4 | Raw mic 4 (270°) | DOA estimation |
+| 5 | Playback reference | AEC (unused) |
 
-### Verify Detection
+**Note:** The ReSpeaker is a **microphone array only**. It does NOT have a speaker output.
+
+## Speaker (Required for Tests)
+
+### Option 1: Dell AC511 USB SoundBar (Preferred)
+- USB-powered soundbar
+- Plug-and-play with Jetson
+
+### Option 2: HDMI/DisplayPort Audio
+- Monitor/TV with built-in speakers
+- Connect via HDMI or DisplayPort cable
+
+### Option 3: Other USB Audio
+- Any USB speaker or headphone adapter
+
+**Important:** For hardware loopback tests, you MUST have an external speaker connected. The ReSpeaker mic array does not provide audio output.
+
+## Connection Diagram
+
+```
+[USB Speaker] → [Jetson Orin] ← [ReSpeaker 4-Mic Array]
+                                    ↓
+                              Captures audio for ASR + DOA
+```
+
+## Firmware Flashing
+
+To enable multi-channel DOA, flash the 6-channel firmware:
 
 ```bash
-# List ALSA capture devices
-arecord -l
-# Expected: card 0: HD-Camera [...], device 0: USB Audio [USB Audio]
-
-# Quick mic test — record 3 s, play back
-arecord -D hw:0,0 -f S16_LE -r 16000 -c 1 -d 3 /tmp/test.wav
-aplay /tmp/test.wav
+cd /tmp
+git clone https://github.com/respeaker/usb_4_mic_array.git
+cd usb_4_mic_array
+sudo python dfu.py --download 6_channels_firmware.bin
+# Re-plug the ReSpeaker
 ```
 
-### PyAudio Device Index
+## Verification
 
-PyAudio assigns its own device indices independently of ALSA card numbers.
-Run this to find the correct index:
+Check devices are detected:
+```bash
+# List capture devices (should show ReSpeaker)
+arecord -l | grep ReSpeaker
 
-```python
-import pyaudio
-pa = pyaudio.PyAudio()
-for i in range(pa.get_device_count()):
-    info = pa.get_device_info_by_index(i)
-    if info["maxInputChannels"] > 0:
-        print(i, info["name"])
+# List playback devices (should show your speaker)
+aplay -l | grep -E "(Dell|HDMI|USB)"
 ```
 
-Look for a line containing `"HD-Camera"` or `"USB Audio"` — that index is the
-one to pass to `MicCapture(device_index=N)`.
+## DOA Algorithm
 
-On a fresh JetPack 6.2 install the HIKVISION camera appeared at **ALSA card 0**
-(`hw:0,0`). The PyAudio index may differ; re-run the snippet above after every
-OS reinstall.
+Uses SRP-PHAT (Steered Response Power - Phase Transform) algorithm on raw mic channels 1-4.
 
----
+**Geometry:**
+- Circular array, radius 46.5mm
+- Mic positions: 0°, 90°, 180°, 270°
 
-## Enclosure & Wiring
+**Process:**
+1. Capture 6-channel audio via PyAudio
+2. Extract ch0 → Whisper ASR
+3. Extract ch1-4 → SRP-PHAT DOA estimation
+4. Estimate speaker direction at each commit
+5. Register speakers by angle (30° threshold)
 
-### Minimal Bench Setup
+## Troubleshooting
 
-```
-[HIKVISION USB Camera]
-        |
-        | USB 2.0 cable
-        |
-[Jetson Orin Nano dev kit]
-        |
-        | Ethernet or Wi-Fi
-        |
-[Network / Internet] ──► Hypha server (https://hypha.aicell.io/)
-```
+| Issue | Solution |
+|-------|----------|
+| No ReSpeaker detected | Check USB connection, re-plug device |
+| No 6-channel audio | Re-flash firmware, verify with `arecord -l` shows 6 channels |
+| DOA returns '?' | Check firmware is 6-channel, verify raw mics are being passed to engine |
+| Test produces no sound | Ensure external speaker (Dell USB or HDMI) is connected |
+| High WER | Check speaker volume, mic distance, reduce background noise |
 
-### Recommended Deployment
+## Test Requirements
 
-For a permanent edge deployment:
-
-1. **Enclosure** — mount the Jetson in a ventilated enclosure (e.g. Waveshare
-   metal case). Allow ≥ 5 cm clearance on the heatsink side.
-2. **Camera position** — point the HIKVISION camera at the subject area.
-   Mount at head height for best direct-speech capture.
-3. **USB cable** — use a cable ≤ 3 m to avoid USB 2.0 signal degradation.
-   If a longer run is needed, use a powered USB hub.
-4. **Power** — use the official 19 V / 4 A PSU. Underpowering the Jetson
-   causes throttling that increases Whisper latency.
-5. **Network** — wired Ethernet is strongly preferred. Wi-Fi introduces
-   variable latency on the Hypha streaming connection.
-
----
-
-## Future: ReSpeaker Mic Array v2.0
-
-See [Phase 8 in CLAUDE.md](../CLAUDE.md) for the upgrade plan.
-
-The ReSpeaker Mic Array v2.0 provides:
-- 4-mic circular array with beamforming
-- On-chip noise suppression (XMOS XVF-3000)
-- USB UAC interface (no custom driver required on Linux)
-- 16 kHz mono beamformed output — drop-in replacement for the HIKVISION mic
-
-When the array is available, update `audio/capture.py` to accept a
-`--device respeaker` flag that selects the beamformed channel.
+Hardware loopback tests require:
+1. ReSpeaker 4-Mic Array with 6-channel firmware
+2. External speaker (Dell USB SoundBar or HDMI audio)
+3. Quiet environment (for WER test)
+4. Speaker positioned ~0.5-1m from ReSpeaker

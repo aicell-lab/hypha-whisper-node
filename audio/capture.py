@@ -78,54 +78,91 @@ class MicCapture:
     """
 
     def __init__(self, preferred_mic: Optional[str] = None):
-        self.raw_audio_queue: queue.Queue[np.ndarray] = queue.Queue()
+        found = find_mic(preferred_mic)
+        if found is None:
+            raise RuntimeError(
+                "No supported USB mic found. "
+                "Supported: ReSpeaker 4 Mic Array, HIK 1080P Camera."
+            )
+
+        self._dev_index, self._dev_name, self._cap_ch, self._out_ch = found
+        logger.info("[MicCapture] Using '%s' (channels=%d, output_ch=%d)",
+                    self._dev_name, self._cap_ch, self._out_ch)
+
         self._pa: Optional[pyaudio.PyAudio] = None
         self._stream: Optional[pyaudio.Stream] = None
 
-        result = find_mic(preferred_mic)
-        if result is None:
-            names = [n for n, _, _ in _MIC_PROFILES]
-            raise RuntimeError(
-                f"No supported microphone found (tried: {names}). "
-                "Check that the USB device is plugged in."
-            )
-        self._device_index, self._device_name, self._cap_ch, self._out_ch = result
-        logger.info("[MicCapture] Found '%s' at device index %d (capture ch=%d, use ch=%d)",
-                    self._device_name, self._device_index, self._cap_ch, self._out_ch)
+        # Queue for ASR audio (ch0 - beamformed)
+        self.raw_audio_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=20)
 
-    def start(self):
-        """Open the PyAudio stream and start background capture."""
+        self._running = False
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _extract_channel(self, interleaved: np.ndarray, ch: int, total_ch: int):
+        """Extract a single channel from interleaved multi-channel audio."""
+        return interleaved[ch::total_ch].astype(np.float32) / 32768.0
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """Start the PyAudio input stream (idempotent)."""
+        if self._running:
+            return
+
         self._pa = pyaudio.PyAudio()
+
+        def _callback(in_data, frame_count, time_info, status):
+            raw = np.frombuffer(in_data, dtype=np.int16)
+            
+            # Extract the beamformed channel (ch0 for ReSpeaker)
+            ch_data = self._extract_channel(raw, self._out_ch, self._cap_ch)
+            
+            try:
+                self.raw_audio_queue.put_nowait(ch_data)
+            except queue.Full:
+                pass  # Drop if consumer is slow
+            
+            return (None, pyaudio.paContinue)
+
         self._stream = self._pa.open(
             format=pyaudio.paInt16,
             channels=self._cap_ch,
             rate=SAMPLE_RATE,
             input=True,
-            input_device_index=self._device_index,
+            input_device_index=self._dev_index,
             frames_per_buffer=_CHUNK_SAMPLES,
-            stream_callback=self._callback,
+            stream_callback=_callback,
         )
-        self._stream.start_stream()
-        logger.info("[MicCapture] Stream started (%.2f s chunks, %d-ch → ch%d)",
-                    _CHUNK_SAMPLES / SAMPLE_RATE, self._cap_ch, self._out_ch)
 
-    def stop(self):
-        """Stop the stream and release resources."""
+        self._stream.start_stream()
+        self._running = True
+        logger.info("[MicCapture] Stream started")
+
+    def stop(self) -> None:
+        """Stop and close the PyAudio stream."""
+        if not self._running:
+            return
+        self._running = False
+
         if self._stream is not None:
             self._stream.stop_stream()
             self._stream.close()
             self._stream = None
+
         if self._pa is not None:
             self._pa.terminate()
             self._pa = None
-        logger.info("[MicCapture] Stopped")
 
-    def _callback(self, in_data, frame_count, time_info, status):
-        """PyAudio callback — runs in a dedicated audio thread."""
-        raw = np.frombuffer(in_data, dtype=np.int16)
-        if self._cap_ch > 1:
-            # Interleaved multi-channel: extract the beamformed channel
-            raw = raw[self._out_ch :: self._cap_ch]
-        audio = raw.astype(np.float32) / 32768.0
-        self.raw_audio_queue.put(audio)
-        return (None, pyaudio.paContinue)
+        # Drain queue to help GC
+        while not self.raw_audio_queue.empty():
+            try:
+                self.raw_audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        logger.info("[MicCapture] Stream stopped")

@@ -607,6 +607,8 @@ class HyphaClient:
             finally:
                 watchdog_task.cancel()
             logger.warning("[hypha] Connection lost — reconnecting in 5 s…")
+            # Disconnect before reconnecting to clean up the old service registration
+            await self.disconnect()
             await asyncio.sleep(5)
 
     # ------------------------------------------------------------------
@@ -681,6 +683,17 @@ class HyphaClient:
             "name": SERVICE_NAME,
             "type": "asgi",
             "serve": serve_asgi,
-            "config": {"visibility": "public", "require_context": True},
+            "config": {"visibility": "public", "require_context": True, "overwrite": True},
         })
         logger.info("[hypha] Service info: %s", dict(svc_info))
+
+    async def disconnect(self):
+        """Disconnect from Hypha server."""
+        if self._server is not None:
+            try:
+                await self._server.disconnect()
+                logger.info("[hypha] Disconnected from server")
+            except Exception as exc:
+                logger.warning("[hypha] Error during disconnect: %s", exc)
+            finally:
+                self._server = None

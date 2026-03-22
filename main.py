@@ -18,7 +18,6 @@ Offline mode (no --server / HYPHA_SERVER): transcribes locally and prints to std
 
 import argparse
 import asyncio
-import concurrent.futures
 import logging
 import os
 import queue
@@ -63,70 +62,36 @@ def parse_args():
     p.add_argument("--token",
                    default=os.environ.get("HYPHA_WORKSPACE_TOKEN", ""),
                    help="Workspace token (default: $HYPHA_WORKSPACE_TOKEN)")
-    p.add_argument("--model", default="small.en",
-                   help="Whisper model name or HuggingFace ID (default: small.en)")
-    p.add_argument("--backend", default="whisper-plain",
-                   choices=["whisper-plain", "whisper-timestamped", "distil-whisper"],
-                   help="ASR backend (default: whisper-plain)")
+    p.add_argument("--model", default="base.en",
+                   help="Whisper model name (default: base.en)")
     p.add_argument("--device", default="",
                    help="PyTorch device: cuda or cpu (default: auto)")
     p.add_argument("--mic", default="",
                    help="Preferred mic name substring (default: auto-detect ReSpeaker then HIK)")
-    p.add_argument("--prompt", default=os.environ.get("WHISPER_PROMPT", ""),
-                   help="Domain vocabulary prompt prepended to every Whisper transcription call "
-                        "(e.g. 'Hypha, AICell Lab, bioimaging'). "
-                        "Also reads $WHISPER_PROMPT env var.")
     return p.parse_args()
 
 
-async def audio_loop(mic, engine, shutdown: asyncio.Event, listening: asyncio.Event):
-    """Feed raw audio chunks from the mic into the streaming engine when listening is set.
+async def audio_loop(mic, engine, shutdown: asyncio.Event):
+    """Continuously feed raw audio chunks from the mic into the streaming engine.
 
-    Runs as an independent asyncio Task. Only processes audio when the
-    'listening' Event is set (i.e., when at least one client is connected).
-    The engine's process_audio() is blocking (runs Whisper inference), so it
-    executes in a dedicated single-worker thread pool to prevent default pool
-    saturation during inference. Committed text is placed into engine.text_queue
-    by process_audio().
+    Runs as an independent asyncio Task. The engine's process_audio() is
+    blocking (runs Whisper inference), so it executes in a thread executor.
+    Committed text is placed into engine.text_queue by process_audio().
     """
     loop = asyncio.get_event_loop()
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    logger.info("[audio_loop] Started (waiting for clients)")
-    try:
-        while not shutdown.is_set():
-            # Wait until listening is enabled (client connected)
-            if not listening.is_set():
-                try:
-                    await asyncio.wait_for(listening.wait(), timeout=0.5)
-                except asyncio.TimeoutError:
-                    continue
-            
-            # Drain the audio queue to avoid backlog after pausing
-            while not mic.raw_audio_queue.empty():
-                try:
-                    mic.raw_audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-            
-            # Process audio while listening is enabled
-            while listening.is_set() and not shutdown.is_set():
-                try:
-                    chunk = await asyncio.wait_for(
-                        loop.run_in_executor(executor, mic.raw_audio_queue.get, True, 0.1),
-                        timeout=0.5,
-                    )
-                except (asyncio.TimeoutError, queue.Empty):
-                    # Check if we're still listening
-                    continue
-                try:
-                    await loop.run_in_executor(executor, engine.process_audio, chunk)
-                except Exception as exc:
-                    logger.warning("[audio_loop] process_audio error: %s", exc)
-            
-            if not shutdown.is_set():
-                logger.info("[audio_loop] Paused (no clients)")
-    finally:
-        executor.shutdown(wait=False)
+    logger.info("[audio_loop] Started")
+    while not shutdown.is_set():
+        try:
+            chunk = await asyncio.wait_for(
+                loop.run_in_executor(None, mic.raw_audio_queue.get, True, 0.1),
+                timeout=0.5,
+            )
+        except (asyncio.TimeoutError, queue.Empty):
+            continue
+        try:
+            await loop.run_in_executor(None, engine.process_audio, chunk)
+        except Exception as exc:
+            logger.warning("[audio_loop] process_audio error: %s", exc)
 
 
 async def run_offline(engine, shutdown: asyncio.Event):
@@ -141,9 +106,7 @@ async def run_offline(engine, shutdown: asyncio.Event):
                 loop.run_in_executor(None, engine.text_queue.get, True, 0.5),
                 timeout=1.0,
             )
-            # Note: Transcript text is NOT logged for privacy
-            # It is only streamed via SSE to connected clients
-            print("[transcript] <received>", flush=True)
+            print(f"[transcript] {text}", flush=True)
         except (asyncio.TimeoutError, queue.Empty):
             continue
 
@@ -165,12 +128,10 @@ async def main():
     # ------------------------------------------------------------------
     # Streaming engine (loads Whisper model)
     # ------------------------------------------------------------------
-    logger.info("[main] Loading Whisper model '%s' (backend: %s)...", args.model, args.backend)
+    logger.info("[main] Loading Whisper model '%s'...", args.model)
     from transcribe.streaming_engine import StreamingEngine
     engine = StreamingEngine(
         model_name=args.model,
-        backend=args.backend,
-        prompt_prefix=args.prompt,
     )
 
     # ------------------------------------------------------------------
@@ -178,7 +139,6 @@ async def main():
     # ------------------------------------------------------------------
     loop = asyncio.get_event_loop()
     shutdown = asyncio.Event()
-    listening = asyncio.Event()  # Set when at least one client is connected
 
     def _sigint_handler():
         logger.info("[main] Shutdown signal received")
@@ -188,56 +148,30 @@ async def main():
     loop.add_signal_handler(signal.SIGTERM, _sigint_handler)
 
     # ------------------------------------------------------------------
-    # Client connection callbacks for on-demand listening
+    # Start mic capture + audio processing loop
     # ------------------------------------------------------------------
-    def on_first_client():
-        """Called when first client connects - start listening."""
-        logger.info("[main] First client connected - starting microphone")
-        mic.start()
-        listening.set()
+    logger.info("[main] Starting mic capture...")
+    mic.start()
+    logger.info("[main] Mic capture running")
 
-    def on_last_client():
-        """Called when last client disconnects - stop listening."""
-        logger.info("[main] Last client disconnected - stopping microphone")
-        listening.clear()
-        mic.stop()
-        # Drain the text queue to avoid stale transcripts on reconnect
-        while not engine.text_queue.empty():
-            try:
-                engine.text_queue.get_nowait()
-            except queue.Empty:
-                break
-
-    # ------------------------------------------------------------------
-    # Start audio processing loop (mic will be started on first client)
-    # ------------------------------------------------------------------
-    audio_task = loop.create_task(audio_loop(mic, engine, shutdown, listening))
+    audio_task = loop.create_task(audio_loop(mic, engine, shutdown))
 
     # ------------------------------------------------------------------
     # Hypha RPC or offline mode
     # ------------------------------------------------------------------
     if args.server:
-        # Prime the session once here so the engine is ready before any client
-        # connects.  Session lifecycle is no longer tied to individual SSE
-        # client connect/disconnect events.
-        engine.init_session()
         from rpc.hypha_client import HyphaClient
         client = HyphaClient(
             server_url=args.server,
             workspace=args.workspace,
             token=args.token,
             streaming_engine=engine,
-            on_first_client=on_first_client,
-            on_last_client=on_last_client,
         )
         logger.info("[main] Connecting to Hypha at %s (workspace: %s)...",
                     args.server, args.workspace or "<default>")
         rpc_task = loop.create_task(client.run())
     else:
         logger.info("[main] No server configured — running in offline mode")
-        # In offline mode, start mic immediately
-        mic.start()
-        listening.set()
         rpc_task = loop.create_task(run_offline(engine, shutdown))
 
     # Wait until shutdown signal
@@ -254,12 +188,9 @@ async def main():
     # Flush any remaining audio context from the streaming engine.
     final = await loop.run_in_executor(None, engine.finish_session)
     if final:
-        # Note: Final transcript text is NOT logged for privacy
-        logger.info("[main] Final transcript flushed (not logged for privacy)")
+        logger.info("[main] Final transcript: %s", final)
 
-    # Only stop mic if it was started
-    if listening.is_set():
-        mic.stop()
+    mic.stop()
     logger.info("[main] Done")
 
 

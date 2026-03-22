@@ -15,7 +15,7 @@ EnvironmentFile=-/etc/hypha-whisper/config.env
 # libcusparseLt and CUDA libs are not in the default ld path on JP6.2
 Environment="LD_LIBRARY_PATH=%HOME%/.local/lib:/usr/local/cuda/lib64:/usr/local/cuda-12.6/lib64"
 
-ExecStart=/usr/bin/python3 %WORKING_DIR%/main.py
+ExecStart=%CONDA_PREFIX%/bin/python %WORKING_DIR%/main.py
 
 # Auto-restart on crash
 Restart=always

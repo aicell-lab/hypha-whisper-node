@@ -48,6 +48,108 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 
 ---
 
+## Architecture & Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         hypha-whisper-node Architecture                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────┐     ┌─────────────┐     ┌─────────────────┐     ┌──────────┐
+│  ReSpeaker  │     │   MicCapture│     │  StreamingEngine│     │ Hypha    │
+│  4-Mic Array│────▶│   (PyAudio) │────▶│  (Whisper ASR)  │────▶│  Client  │
+│  (USB Audio)│     │             │     │                 │     │          │
+└─────────────┘     └─────────────┘     └─────────────────┘     └────┬─────┘
+       │                    │                    │                   │
+       │                    │                    │                   │
+       ▼                    ▼                    ▼                   ▼
+┌─────────────┐     ┌─────────────┐     ┌─────────────────┐     ┌──────────┐
+│ XMOS XVF-   │     │ 6-channel   │     │ LocalAgreement  │     │ ASGI     │
+│ 3000 DSP    │     │ audio:      │     │ Algorithm       │     │ Service  │
+│             │     │ • ch0=ASR   │     │                 │     │          │
+│ • Beamform  │     │ • ch1-4=DOA │     │ • VAD (Silero)  │     │ Endpoints│
+│ • DOA       │     │             │     │ • Buffer 3-5s   │     │          │
+│ • AEC/NS    │     │             │     │ • Commit text   │     │ /        │
+└─────────────┘     └─────────────┘     └─────────────────┘     │ /transcript_feed
+                                                               │ /health
+                                                               │ /logs
+                                                               └────┬─────┘
+                                                                    │
+                                                                    ▼
+                                                            ┌──────────────┐
+                                                            │   Browser    │
+                                                            │   (SSE)      │
+                                                            └──────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Data Flow (Privacy-First)                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Speech ──▶ Memory ──▶ Whisper (local GPU) ──▶ Text ──▶ SSE ──▶ Discard   │
+│              (temp)        (no cloud)              │                        │
+│                                                    ▼                        │
+│                                              ┌─────────┐                    │
+│                                              │  DOA    │                    │
+│                                              │  Buffer │                    │
+│                                              │ (timing │                    │
+│                                              │  fix)   │                    │
+│                                              └─────────┘                    │
+│                                                                             │
+│   🔒 No audio stored  🔒 No transcript history  🔒 No cloud processing     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    DOA Time-Alignment (Key Fix)                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Problem: LocalAgreement buffers 3-5s, so text commits AFTER audio captured │
+│                                                                             │
+│  WRONG (old):  DOA at commit time ──▶ misattributes if speaker changes      │
+│                                                                             │
+│  CORRECT (new):                                                             │
+│    1. DOA polled from firmware every 50ms ──▶ store as time intervals       │
+│    2. When text commits, get its actual time range [begin, end]             │
+│    3. Query: which DOA angle had longest overlap with [begin, end]?         │
+│                                                                             │
+│    Speaker 1: 0-4.9s @ 90°  ═══╤═══  Dominant = 90° (4.9s > 0.1s)         │
+│    Speaker 2: 4.9-5s @ 341° ───╯                                            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Module Structure
+
+```
+hypha-whisper-node/
+├── main.py                      # Entry point, orchestrates all components
+├── audio/
+│   ├── capture.py               # PyAudio microphone capture
+│   └── doa_reader.py            # ReSpeaker USB DOA + IntervalBuffer
+├── transcribe/
+│   ├── streaming_engine.py      # Whisper + LocalAgreement + DOA alignment
+│   ├── speaker_registry.py      # Direction-based speaker labeling
+│   └── whisper_online.py        # Vendored from whisper_streaming
+├── rpc/
+│   └── hypha_client.py          # Hypha RPC ASGI service (SSE endpoints)
+└── tests/
+    └── test_hardware_loopback.py # Acoustic WER + DOA verification
+```
+
+### Key Components
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Audio Capture** | PyAudio | ReSpeaker 6-channel (ch0=ASR, ch1-4=raw) |
+| **DOA Estimation** | XMOS XVF-3000 | On-chip direction detection via USB |
+| **ASR Engine** | Whisper + LocalAgreement | Streaming transcription with buffering |
+| **VAD** | Silero VAD | Voice activity detection |
+| **DOA Alignment** | Duration-weighted overlap | Correct attribution during speaker changes |
+| **Streaming** | Hypha RPC + SSE | Real-time text delivery to browsers |
+| **Watchdog** | systemd + sd_notify | Auto-restart on hang or crash |
+
+---
+
 ## 🔒 Privacy & Security
 
 **hypha-whisper-node** is built with privacy as a foundational principle:
@@ -198,7 +300,7 @@ Open `https://<HYPHA_SERVER>/<WORKSPACE>/apps/hypha-whisper/` in a browser. The 
 
 Each transcript segment is tagged with a coloured direction badge (e.g. **45°**) showing the DOA angle when the speech was detected. Consecutive segments from the same direction are grouped into one line.
 
-> **Known limitation — speaker/angle attribution:** LocalAgreement (the streaming ASR algorithm) introduces 3–5 s commit latency. If a second speaker starts talking before the first speaker's text is committed, both speakers' audio overlap in the pending buffer and the DOA angle at commit time may reflect the second speaker rather than the first. The raw `angle` field is the most reliable signal; the `speaker` grouping label is best-effort only.
+> **✅ Fixed — DOA attribution:** Previously, speaker angles could be misattributed when multiple people spoke during LocalAgreement's 3-5s buffering period. The fix uses duration-weighted overlap: each transcript segment is tagged with the DOA angle that had the longest overlap with its actual time range (learned from WhisperX's interval tree approach).
 
 ### SSE payload format
 

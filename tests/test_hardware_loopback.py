@@ -50,7 +50,7 @@ REFERENCE = " ".join(
 )
 
 # Speaker detection fallback list (in priority order)
-# 1. Dell AC511 USB SoundBar (original hardware)
+# 1. Dell AC511 USB SoundBar
 # 2. HDMI/DisplayPort audio (monitor speakers)
 # 3. Generic ALSA outputs
 SPEAKER_CANDIDATES = [
@@ -262,7 +262,7 @@ def test_mic_capture_rms():
     speaker_idx, speaker_name = _find_output_device()
 
     from audio.capture import MicCapture
-    mic = MicCapture(preferred_mic=MIC_NAME)
+    mic = MicCapture()
     mic.start()
 
     pcm = _decode_audio_to_pcm(MALE_WAV, SPEAKER_RATE, SPEAKER_CHANNELS)
@@ -328,7 +328,7 @@ def test_acoustic_loopback_wer():
     audio_duration = len(pcm) / SPEAKER_CHANNELS / SPEAKER_RATE
     print(f"[test] Audio duration: {audio_duration:.1f}s")
 
-    mic = MicCapture(preferred_mic=MIC_NAME)
+    mic = MicCapture()
     engine = StreamingEngine(model_name="small.en", use_vac=True,
                               enable_doa=False, enable_speaker_id=False)
     engine.init_session()
@@ -376,7 +376,13 @@ def test_acoustic_loopback_wer():
                 chunk = mic.raw_audio_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            engine.process_audio(chunk)
+            # Get multi-channel data for DOA if available
+            raw_mics = None
+            try:
+                raw_mics = mic.multi_channel_queue.get_nowait()
+            except queue.Empty:
+                pass
+            engine.process_audio(chunk, raw_mics=raw_mics)
             _drain_text()
 
         print("[test] Playback complete — flushing buffer...")
@@ -387,7 +393,13 @@ def test_acoustic_loopback_wer():
                 chunk = mic.raw_audio_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            engine.process_audio(chunk)
+            # Get multi-channel data for DOA if available
+            raw_mics = None
+            try:
+                raw_mics = mic.multi_channel_queue.get_nowait()
+            except queue.Empty:
+                pass
+            engine.process_audio(chunk, raw_mics=raw_mics)
             _drain_text()
 
     finally:
@@ -554,7 +566,7 @@ def test_speaker_identification():
     sd_device_idx, speaker_name = _find_sd_output_device()
     print(f"\n[test] sounddevice output: {speaker_name} at index={sd_device_idx}")
 
-    mic = MicCapture(preferred_mic=MIC_NAME)
+    mic = MicCapture()
     engine = StreamingEngine(model_name="small.en", use_vac=True,
                               enable_doa=True, enable_speaker_id=True)
     engine.init_session()
@@ -594,7 +606,13 @@ def test_speaker_identification():
                     chunk = mic.raw_audio_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                engine.process_audio(chunk)
+                # Get multi-channel data for DOA if available
+                raw_mics = None
+                try:
+                    raw_mics = mic.multi_channel_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                engine.process_audio(chunk, raw_mics=raw_mics)
                 seg_items.extend(_drain_items())
 
             flush_end = time.monotonic() + SEGMENT_POST_WAIT
@@ -603,7 +621,13 @@ def test_speaker_identification():
                     chunk = mic.raw_audio_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                engine.process_audio(chunk)
+                # Get multi-channel data for DOA if available
+                raw_mics = None
+                try:
+                    raw_mics = mic.multi_channel_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                engine.process_audio(chunk, raw_mics=raw_mics)
                 seg_items.extend(_drain_items())
 
             play_thread.join(timeout=5)
@@ -682,7 +706,7 @@ def test_speaker_stability_under_variation():
         ch_name = "LEFT" if channel == 0 else "RIGHT"
         print(f"\n[stability] ══════ {base_label} ({ch_name}) ══════")
 
-        mic = MicCapture(preferred_mic=MIC_NAME)
+        mic = MicCapture()
         engine = StreamingEngine(
             model_name="small.en", use_vac=True,
             enable_doa=True, enable_speaker_id=True,

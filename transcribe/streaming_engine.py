@@ -3,7 +3,7 @@ transcribe/streaming_engine.py — Streaming Whisper engine using LocalAgreement
 
 Wraps whisper_streaming's OnlineASRProcessor / VACOnlineASRProcessor.
 Usage:
-    engine = StreamingEngine(model_name="small.en")
+    engine = StreamingEngine(model_name="base.en")
     engine.init_session()          # called when SSE client connects
     text = engine.process_audio(chunk)   # np.float32, 16 kHz, any size
     engine.finish_session()        # called when SSE client disconnects
@@ -13,6 +13,7 @@ when DOAReader / SpeakerRegistry are available, otherwise plain str for
 backwards compatibility.
 """
 
+import concurrent.futures
 import logging
 import queue
 import sys
@@ -25,20 +26,20 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "base.en"
-DEFAULT_BACKEND = "whisper-plain"
 
 
 def _try_import_doa():
-    """Lazy import of DOAReader — returns class or None."""
+    """Lazy import of DOAReader and DOAIntervalBuffer — returns classes or None."""
     try:
         # Ensure project root is in sys.path for 'audio' package
         _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if _root not in sys.path:
             sys.path.insert(0, _root)
-        from audio.doa_reader import DOAReader
-        return DOAReader
-    except Exception:
-        return None
+        from audio.doa_reader import DOAReader, DOAIntervalBuffer
+        return DOAReader, DOAIntervalBuffer
+    except Exception as e:
+        logger.debug("[StreamingEngine] DOAReader not available: %s", e)
+        return None, None
 
 
 def _try_import_speaker_registry():
@@ -54,93 +55,10 @@ def _try_import_speaker_registry():
 
 
 
-class _DistilWhisperASR:
-    """Distil-Whisper backend using HuggingFace transformers.
-
-    Uses distil-whisper/distil-small.en — ~2x faster than small.en with near-identical WER.
-    Runs on PyTorch CUDA via transformers pipeline (no CTranslate2 required).
-    Word-level timestamps are produced via return_timestamps="word".
-    """
-
-    sep = " "
-
-    def __init__(self, lan, modelsize=None, cache_dir=None, model_dir=None, logfile=sys.stderr):
-        hf_model = model_dir or modelsize or "distil-whisper/distil-small.en"
-        # English-only models (*.en) don't accept task/language in generate_kwargs
-        self._is_english_only = hf_model.endswith(".en")
-        self.original_language = None if (self._is_english_only or lan == "auto") else lan
-        self.transcribe_kargs = {}
-        import torch
-        from transformers import pipeline as hf_pipeline
-        if not torch.cuda.is_available():
-            raise RuntimeError(
-                "[_DistilWhisperASR] CUDA not available — "
-                "cannot load model (check LD_LIBRARY_PATH and GPU state)"
-            )
-        logger.info("[_DistilWhisperASR] Loading '%s' on cuda...", hf_model)
-        self._pipe = hf_pipeline(
-            "automatic-speech-recognition",
-            model=hf_model,
-            torch_dtype=torch.float16,
-            device="cuda",
-        )
-        logger.info("[_DistilWhisperASR] Model loaded on cuda")
-
-    def transcribe(self, audio, init_prompt=""):
-        if getattr(self, "prompt_prefix", "") and init_prompt:
-            init_prompt = self.prompt_prefix + " " + init_prompt
-        elif getattr(self, "prompt_prefix", ""):
-            init_prompt = self.prompt_prefix
-        generate_kwargs = {}
-        if self.original_language:
-            generate_kwargs["language"] = self.original_language
-        generate_kwargs.update(self.transcribe_kargs)
-        # distil-whisper crashes with return_timestamps="word" (cross-attention
-        # alignment heads mismatch in distilled layers). Chunk-level is fine.
-        result = self._pipe(
-            audio.copy(),
-            return_timestamps=True,
-            generate_kwargs=generate_kwargs,
-        )
-        return result
-
-    def ts_words(self, r):
-        """Convert HuggingFace chunks [{"text":..,"timestamp":(s,e)}] to [(start,end,text)]."""
-        o = []
-        for chunk in r.get("chunks", []):
-            ts = chunk.get("timestamp") or (None, None)
-            start, end = ts
-            if start is None or end is None:
-                continue
-            o.append((start, end, chunk["text"]))
-        return o
-
-    def segments_end_ts(self, res):
-        """Group words into pseudo-segments by silence gaps > 0.5s; return segment end times."""
-        words = self.ts_words(res)
-        if not words:
-            return []
-        segment_ends = []
-        prev_end = words[0][1]
-        for start, end, _ in words[1:]:
-            if start - prev_end > 0.5:
-                segment_ends.append(prev_end)
-            prev_end = end
-        segment_ends.append(prev_end)
-        return segment_ends
-
-    def use_vad(self):
-        pass  # VAC handles VAD externally
-
-    def set_translate_task(self):
-        if not self._is_english_only:
-            self.transcribe_kargs["task"] = "translate"
-
-
 class _OptimizedWhisperTimestampedASR:
     """Optimized whisper-timestamped backend for Jetson Orin Nano GPU.
 
-    Uses fp16 on CUDA, beam_size=1, and condition_on_previous_text=False
+    Uses fp16 on CUDA, beam_size=3, and condition_on_previous_text=False
     for faster streaming transcription with LocalAgreement.
     """
 
@@ -149,27 +67,17 @@ class _OptimizedWhisperTimestampedASR:
     def __init__(self, lan, modelsize=None, cache_dir=None, model_dir=None, logfile=sys.stderr):
         self.original_language = lan
         self.transcribe_kargs = {}
-        import torch
         import whisper
         import whisper_timestamped
         from whisper_timestamped import transcribe_timestamped
         self.transcribe_timestamped = transcribe_timestamped
-        if not torch.cuda.is_available():
-            raise RuntimeError(
-                "[_OptimizedWhisperTimestampedASR] CUDA not available — "
-                "cannot load Whisper model (check LD_LIBRARY_PATH and GPU state)"
-            )
-        logger.info("[_OptimizedWhisperTimestampedASR] Loading '%s' on cuda...",
-                    modelsize or model_dir)
-        self.model = whisper.load_model(modelsize or model_dir, device="cuda",
-                                        download_root=cache_dir)
-        logger.info("[_OptimizedWhisperTimestampedASR] Model loaded on cuda")
+        logger.info("[_OptimizedWhisperTimestampedASR] Loading '%s'...", modelsize or model_dir)
+        self.model = whisper.load_model(modelsize or model_dir, download_root=cache_dir)
+        logger.info("[_OptimizedWhisperTimestampedASR] Model loaded")
 
     def transcribe(self, audio, init_prompt=""):
-        if getattr(self, "prompt_prefix", "") and init_prompt:
-            init_prompt = self.prompt_prefix + " " + init_prompt
-        elif getattr(self, "prompt_prefix", ""):
-            init_prompt = self.prompt_prefix
+        import torch
+        use_fp16 = torch.cuda.is_available()
         result = self.transcribe_timestamped(
             self.model,
             audio,
@@ -177,9 +85,8 @@ class _OptimizedWhisperTimestampedASR:
             initial_prompt=init_prompt if init_prompt else None,
             verbose=None,
             condition_on_previous_text=False,
-            fp16=True,
-            beam_size=1,
-            temperature=0.0,
+            fp16=use_fp16,
+            beam_size=3,
             **self.transcribe_kargs,
         )
         return result
@@ -202,81 +109,6 @@ class _OptimizedWhisperTimestampedASR:
         self.transcribe_kargs["task"] = "translate"
 
 
-class _PlainWhisperASR:
-    """Fast Whisper backend — plain whisper.transcribe(), no DTW word alignment.
-
-    Avoids the ~30-50% overhead of whisper-timestamped's DTW pass by estimating
-    word timestamps proportionally within each segment. Sufficient for
-    LocalAgreement's N-gram matching (word text + approximate timing only).
-
-    Default backend for streaming transcription on Jetson Orin Nano.
-    """
-
-    sep = " "
-
-    def __init__(self, lan, modelsize=None, cache_dir=None, model_dir=None, logfile=sys.stderr):
-        self.original_language = lan if lan != "auto" else None
-        self.transcribe_kargs = {}
-        import torch
-        import whisper
-        if not torch.cuda.is_available():
-            raise RuntimeError(
-                "[_PlainWhisperASR] CUDA not available — "
-                "cannot load Whisper model (check LD_LIBRARY_PATH and GPU state)"
-            )
-        logger.info("[_PlainWhisperASR] Loading '%s' on cuda...", modelsize or model_dir)
-        self.model = whisper.load_model(
-            modelsize or model_dir, device="cuda", download_root=cache_dir
-        )
-        logger.info("[_PlainWhisperASR] Model loaded on cuda")
-
-    def transcribe(self, audio, init_prompt=""):
-        if getattr(self, "prompt_prefix", "") and init_prompt:
-            init_prompt = self.prompt_prefix + " " + init_prompt
-        elif getattr(self, "prompt_prefix", ""):
-            init_prompt = self.prompt_prefix
-        return self.model.transcribe(
-            audio,
-            language=self.original_language,
-            initial_prompt=init_prompt if init_prompt else None,
-            condition_on_previous_text=False,
-            fp16=True,
-            beam_size=1,
-            temperature=0.0,
-            **self.transcribe_kargs,
-        )
-
-    def ts_words(self, r):
-        """Estimate word timestamps proportionally within each segment.
-
-        Plain whisper.transcribe() gives segment-level timestamps only.
-        We distribute word start/end times evenly across each segment's duration.
-        """
-        o = []
-        for s in r.get("segments", []):
-            words = s["text"].strip().split()
-            if not words:
-                continue
-            seg_start = float(s["start"])
-            seg_end = float(s["end"])
-            if seg_end <= seg_start:
-                seg_end = seg_start + 0.1 * len(words)
-            dur = (seg_end - seg_start) / len(words)
-            for i, w in enumerate(words):
-                o.append((seg_start + i * dur, seg_start + (i + 1) * dur, w))
-        return o
-
-    def segments_end_ts(self, res):
-        return [s["end"] for s in res.get("segments", [])]
-
-    def use_vad(self):
-        pass  # VAC handles VAD externally
-
-    def set_translate_task(self):
-        if self.original_language:
-            self.transcribe_kargs["task"] = "translate"
-
-
 class StreamingEngine:
     """Wraps OnlineASRProcessor and exposes a simple per-session API.
 
@@ -292,29 +124,43 @@ class StreamingEngine:
         self,
         model_name: str = DEFAULT_MODEL,
         language: str = "en",
-        backend: str = DEFAULT_BACKEND,
         use_vac: bool = True,
         chunk_seconds: float = 0.5,
-        buffer_trimming_sec: float = 4.0,
+        buffer_trimming_sec: float = 8.0,
         enable_doa: bool = True,
         enable_speaker_id: bool = True,
-        prompt_prefix: str = "",
     ):
         self.model_name = model_name
         self.text_queue: queue.Queue = queue.Queue()
         self._finished = False
+        
+        # Session timing for DOA timestamp conversion
+        # process_iter() returns begin/end relative to this time
+        self._session_start_time = time.monotonic()
 
-        # DOA reader (optional — USB hardware DOA via ReSpeaker ctrl_transfer)
-        self._doa: Optional[object] = None
+        # DOA: Read from ReSpeaker firmware via USB (XMOS XVF-3000 built-in DOA)
+        self._doa: Optional[object] = None  # DOAReader instance
+        self._doa_buffer: Optional[object] = None  # DOAIntervalBuffer for duration-weighted lookup
+        
         if enable_doa:
-            _DOAReader = _try_import_doa()
-            if _DOAReader is not None:
+            _DOAReader, _DOAIntervalBuffer = _try_import_doa()
+            if _DOAReader is not None and _DOAIntervalBuffer is not None:
                 try:
-                    self._doa = _DOAReader()
+                    # DOAReader polls DOA from firmware via USB
+                    poll_interval = 0.05  # 50ms polling
+                    self._doa = _DOAReader(poll_interval=poll_interval)
                     self._doa.start()
+                    # DOAIntervalBuffer stores DOA as intervals for duration-weighted lookup
+                    # This is the key fix: we calculate which angle had longest overlap
+                    self._doa_buffer = _DOAIntervalBuffer(
+                        maxlen=200,  # ~10s of history
+                        poll_interval=poll_interval
+                    )
+                    logger.info("[StreamingEngine] ReSpeaker firmware DOA initialized (duration-weighted)")
                 except Exception as exc:
-                    logger.warning("[StreamingEngine] DOAReader init failed: %s", exc)
+                    logger.warning("[StreamingEngine] DOA init failed: %s", exc)
                     self._doa = None
+                    self._doa_buffer = None
 
         # Speaker registry (optional)
         self._speaker_registry: Optional[object] = None
@@ -327,15 +173,16 @@ class StreamingEngine:
                     logger.warning("[StreamingEngine] SpeakerRegistry init failed: %s", exc)
                     self._speaker_registry = None
 
-        # Turn off ReSpeaker LEDs on startup
-        try:
-            from pixel_ring import pixel_ring as _pr
-            _pr.off()
-        except Exception:
-            pass
-
+        # Audio accumulator for speaker embedding (collects audio between commits)
+        self._audio_since_last_commit: list = []
         self._last_commit_time: float = 0.0
-        self._last_committed_text: str = ""
+
+        # Thread pool for async speaker identification (1 worker to avoid concurrent CUDA calls)
+        self._speaker_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        if self._speaker_registry is not None:
+            self._speaker_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="speaker-id"
+            )
 
         # Add transcribe/ to sys.path so whisper_online.py can be imported
         _here = os.path.dirname(__file__)
@@ -348,16 +195,8 @@ class StreamingEngine:
 
         from whisper_online import OnlineASRProcessor, VACOnlineASRProcessor
 
-        logger.info("[StreamingEngine] Loading model '%s' (backend: %s)...", model_name, backend)
-        if backend == "distil-whisper":
-            asr = _DistilWhisperASR(lan=language, modelsize=model_name)
-        elif backend == "whisper-timestamped":
-            asr = _OptimizedWhisperTimestampedASR(lan=language, modelsize=model_name)
-        else:  # whisper-plain (default)
-            asr = _PlainWhisperASR(lan=language, modelsize=model_name)
-        if prompt_prefix:
-            asr.prompt_prefix = prompt_prefix
-            logger.info("[StreamingEngine] Domain prompt prefix: %r", prompt_prefix)
+        logger.info("[StreamingEngine] Loading model '%s'...", model_name)
+        asr = _OptimizedWhisperTimestampedASR(lan=language, modelsize=model_name)
 
         buffer_trimming = ("segment", buffer_trimming_sec)
 
@@ -412,8 +251,14 @@ class StreamingEngine:
             except queue.Empty:
                 break
         self._online.init()
+        self._audio_since_last_commit = []
         self._last_commit_time = time.monotonic()
-        self._last_committed_text = ""
+        # Track session start time for DOA timestamp conversion
+        # process_iter() returns begin/end relative to this time
+        self._session_start_time = time.monotonic()
+        # Clear DOA buffer for new session
+        if self._doa_buffer is not None:
+            self._doa_buffer.clear()
         if self._speaker_registry is not None:
             self._speaker_registry.reset()
         logger.info("[StreamingEngine] Session initialised")
@@ -443,10 +288,12 @@ class StreamingEngine:
             if isinstance(self._online, VACOnlineASRProcessor):
                 begin, end, text = self._online.online.process_iter()
                 text = text.strip() if text else ""
-                if text and not self._is_hallucination(text):
-                    self._emit_item(text, self._last_commit_time)
-                    # Note: Transcript text is NOT logged for privacy
-                    logger.info("[StreamingEngine] Pre-flush committed (text not logged)")
+                if text:
+                    audio_snapshot = list(self._audio_since_last_commit)
+                    self._audio_since_last_commit = []
+                    commit_time = self._last_commit_time
+                    self._emit_item_async(text, audio_snapshot, commit_time)
+                    logger.info("[StreamingEngine] Pre-flush committed: %r", text)
         except Exception as exc:
             logger.warning("[StreamingEngine] pre-flush process_iter raised: %s", exc)
 
@@ -456,10 +303,20 @@ class StreamingEngine:
             logger.warning("[StreamingEngine] finish() raised: %s", exc)
             return None
         text = text.strip() if text else ""
-        if text and not self._is_hallucination(text):
-            self._emit_item(text, self._last_commit_time)
-            # Note: Transcript text is NOT logged for privacy
-            logger.info("[StreamingEngine] Flushed final (text not logged)")
+        if text:
+            audio_snapshot = list(self._audio_since_last_commit)
+            self._audio_since_last_commit = []
+            commit_time = self._last_commit_time
+            self._emit_item_async(text, audio_snapshot, commit_time)
+            logger.info("[StreamingEngine] Flushed final: %r", text)
+
+        # Wait for any in-flight speaker ID tasks to complete and push their items
+        if self._speaker_executor is not None:
+            self._speaker_executor.shutdown(wait=True, cancel_futures=False)
+            # Re-create executor for next session
+            self._speaker_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="speaker-id"
+            )
 
         return text if text else None
 
@@ -475,6 +332,21 @@ class StreamingEngine:
         Returns:
             Committed text string, or None if nothing committed yet.
         """
+        # Read DOA from firmware at capture time (not emit time) to avoid 
+        # misattribution when speakers change during the buffering period.
+        # The ReSpeaker firmware's built-in DOA algorithm processes raw mics on-chip.
+        if self._doa is not None and self._doa.enabled and self._doa_buffer is not None:
+            try:
+                # Read current DOA from firmware via USB
+                angle = self._doa.read()
+                if angle is not None:
+                    self._doa_buffer.add(angle)
+            except Exception as exc:
+                logger.debug("[StreamingEngine] DOA read error: %s", exc)
+        
+        # Accumulate audio for speaker embedding
+        self._audio_since_last_commit.append(chunk)
+
         self._online.insert_audio_chunk(chunk)
         try:
             begin, end, text = self._online.process_iter()
@@ -483,128 +355,80 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
-            if self._is_hallucination(text):
-                return None
-            commit_time = self._last_commit_time
-            self._last_commit_time = time.monotonic()
-            self._emit_item(text, commit_time)
-            # Note: Transcript text is NOT logged for privacy (even at debug level)
+            # Snapshot audio buffer and reset before async embedding so subsequent
+            # audio is not included in this segment's embedding.
+            audio_snapshot = list(self._audio_since_last_commit)
+            self._audio_since_last_commit = []
+            
+            # Convert relative timestamps (begin, end) to absolute monotonic time
+            # This allows us to query DOA for the exact time period of this audio segment
+            segment_start = self._session_start_time + (begin or 0)
+            segment_end = self._session_start_time + (end or 0)
+            
+            self._emit_item_async(text, audio_snapshot, segment_start, segment_end)
             logger.debug("[StreamingEngine] Committed [%.2f–%.2f] (text not logged)", begin or 0, end or 0)
             return text
         return None
 
-    # ------------------------------------------------------------------
-    # Hallucination filter
-    # ------------------------------------------------------------------
-
-    def _is_hallucination(self, text: str) -> bool:
-        """Return True if text matches common Whisper hallucination patterns.
-
-        Patterns detected:
-          1. Word loop  — single word repeated ≥6 times and >50% of tokens
-                          e.g. "yeah yeah yeah yeah yeah yeah yeah"
-          2. Phrase loop — same sentence repeated ≥3 times
-                          e.g. "So I'm going to go ahead and do that." × 15
-          3. Exact dup  — identical to the most recent committed text
+    def _emit_item_async(self, text: str, audio_snapshot: list, 
+                         segment_start: float, segment_end: float) -> None:
+        """Identify speaker asynchronously and push item to text_queue when done.
+        
+        Args:
+            text: Transcribed text
+            audio_snapshot: Audio chunks accumulated since last commit
+            segment_start: Absolute monotonic time when this segment started
+            segment_end: Absolute monotonic time when this segment ended
         """
-        import re
-        words = text.split()
-        if not words:
-            return False
+        if self._speaker_executor is None:
+            # No speaker ID — emit immediately
+            self.text_queue.put(self._build_item_sync(text, audio_snapshot, segment_start, segment_end))
+            return
 
-        # 1. Single-word loop
-        if len(words) >= 6:
-            counts: dict[str, int] = {}
-            for w in words:
-                key = w.lower().strip(".,!?;:")
-                counts[key] = counts.get(key, 0) + 1
-            top_word, top_count = max(counts.items(), key=lambda x: x[1])
-            if top_count >= 6 and top_count / len(words) > 0.5:
-                logger.warning(
-                    "[StreamingEngine] Hallucination (word loop %r ×%d) — dropped",
-                    top_word, top_count,
-                )
-                return True
+        def _task():
+            item = self._build_item_sync(text, audio_snapshot, segment_start, segment_end)
+            self.text_queue.put(item)
 
-        # 2. Phrase/sentence loop
-        sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
-        if len(sentences) >= 3:
-            phrase_counts: dict[str, int] = {}
-            for s in sentences:
-                key = s.lower()
-                phrase_counts[key] = phrase_counts.get(key, 0) + 1
-            top_phrase, top_count = max(phrase_counts.items(), key=lambda x: x[1])
-            if top_count >= 3:
-                logger.warning(
-                    "[StreamingEngine] Hallucination (phrase loop %r ×%d) — dropped",
-                    top_phrase[:60], top_count,
-                )
-                return True
-
-        # 3. Exact duplicate of last commit
-        if self._last_committed_text and text.strip().lower() == self._last_committed_text.strip().lower():
-            logger.warning("[StreamingEngine] Hallucination (duplicate commit) — dropped")
-            return True
-
-        # 4. N-gram loop — catches comma-separated repetitions like
-        #    "the other one, the other one, the other one, ..."
-        #    where sentence-split and word-count checks both miss it.
-        clean_words = [w.lower().strip(".,!?;:") for w in words]
-        for n in range(2, 7):
-            if len(clean_words) < n * 4:
-                continue
-            ngram_counts: dict = {}
-            for i in range(len(clean_words) - n + 1):
-                ngram = tuple(clean_words[i : i + n])
-                ngram_counts[ngram] = ngram_counts.get(ngram, 0) + 1
-            top_ngram, top_count = max(ngram_counts.items(), key=lambda x: x[1])
-            if top_count >= 4 and top_count * n / len(clean_words) > 0.4:
-                logger.warning(
-                    "[StreamingEngine] Hallucination (n-gram loop %r ×%d) — dropped",
-                    " ".join(top_ngram),
-                    top_count,
-                )
-                return True
-
-        # 5. Hyphen-stutter loop — catches "we-we-we-we-we-..." patterns where
-        #    a syllable or short word is repeated via hyphens ≥6 times.
-        #    e.g. "wee-we-we-we-we-we-we-..." or "ha-ha-ha-ha-ha-ha-ha-..."
-        for word in words:
-            parts = word.lower().split("-")
-            if len(parts) >= 6:
-                part_counts: dict[str, int] = {}
-                for p in parts:
-                    p = p.strip(".,!?;:")
-                    if p:
-                        part_counts[p] = part_counts.get(p, 0) + 1
-                if part_counts:
-                    top_part, top_part_count = max(part_counts.items(), key=lambda x: x[1])
-                    if top_part_count >= 6 and top_part_count / len(parts) > 0.5:
-                        logger.warning(
-                            "[StreamingEngine] Hallucination (hyphen-stutter %r ×%d) — dropped",
-                            top_part, top_part_count,
-                        )
-                        return True
-
-        return False
+        self._speaker_executor.submit(_task)
 
     # ------------------------------------------------------------------
     # Speaker identification helpers
     # ------------------------------------------------------------------
 
-    def _emit_item(self, text: str, commit_time: float) -> None:
-        """Build and enqueue a text_queue item with DOA-based speaker ID."""
-        angle: Optional[int] = None
-        speaker = ""
+    def _build_item_sync(self, text: str, audio_snapshot: list, 
+                         segment_start: float, segment_end: float) -> dict:
+        """Build a text_queue item with optional speaker ID and DOA angle.
 
-        if self._doa is not None and self._doa.enabled:
-            angle = self._doa.median_angle_since(commit_time)
+        This may block for embedding computation — runs in the speaker-id
+        thread pool when speaker identification is enabled.
+        
+        Uses duration-weighted DOA lookup: the angle with the longest overlap
+        with the transcript's time range is assigned (learned from WhisperX).
+        
+        Args:
+            text: Transcribed text
+            audio_snapshot: Audio chunks since last commit
+            segment_start: Absolute monotonic time when this segment started
+            segment_end: Absolute monotonic time when this segment ended
+        """
+        speaker = "Speaker 1"
+        angle: Optional[int] = None
+
+        # Query DOA using duration-weighted overlap (the fundamental fix).
+        # Instead of median/mode, we find which angle had the longest total
+        # overlap with the time range of this transcript segment.
+        if self._doa_buffer is not None:
+            angle = self._doa_buffer.dominant_angle(segment_start, segment_end)
+        
+        # Fallback: if no overlap found, try most recent DOA reading
+        if angle is None and self._doa is not None and self._doa.enabled:
+            angle = self._doa.read()
 
         if self._speaker_registry is not None:
+            audio_buf = np.concatenate(audio_snapshot) if audio_snapshot else np.zeros(0, dtype=np.float32)
             try:
-                speaker = self._speaker_registry.identify(doa_angle=angle)
+                speaker = self._speaker_registry.identify(audio_buf, sample_rate=16000, doa_angle=angle)
             except Exception as exc:
                 logger.warning("[StreamingEngine] Speaker identify error: %s", exc)
 
-        self._last_committed_text = text
-        self.text_queue.put({"text": text, "speaker": speaker, "angle": angle})
+        return {"text": text, "speaker": speaker, "angle": angle}
