@@ -144,19 +144,38 @@ class MicCapture:
         logger.info("[MicCapture] Stream started")
 
     def stop(self) -> None:
-        """Stop and close the PyAudio stream."""
-        if not self._running:
+        """Stop and close the PyAudio stream.
+        
+        This method is idempotent and handles partial cleanup gracefully.
+        Should be called on shutdown to release the USB audio device.
+        """
+        if not self._running and self._stream is None and self._pa is None:
             return
+        
         self._running = False
 
+        # Stop and close stream with error handling
         if self._stream is not None:
-            self._stream.stop_stream()
-            self._stream.close()
-            self._stream = None
+            try:
+                if self._stream.is_active():
+                    self._stream.stop_stream()
+            except Exception as exc:
+                logger.debug("[MicCapture] Error stopping stream: %s", exc)
+            try:
+                self._stream.close()
+            except Exception as exc:
+                logger.debug("[MicCapture] Error closing stream: %s", exc)
+            finally:
+                self._stream = None
 
+        # Terminate PyAudio instance
         if self._pa is not None:
-            self._pa.terminate()
-            self._pa = None
+            try:
+                self._pa.terminate()
+            except Exception as exc:
+                logger.debug("[MicCapture] Error terminating PyAudio: %s", exc)
+            finally:
+                self._pa = None
 
         # Drain queue to help GC
         while not self.raw_audio_queue.empty():

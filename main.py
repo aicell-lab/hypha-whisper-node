@@ -125,73 +125,83 @@ async def main():
         logger.error("[main] %s", e)
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Streaming engine (loads Whisper model)
-    # ------------------------------------------------------------------
-    logger.info("[main] Loading Whisper model '%s'...", args.model)
-    from transcribe.streaming_engine import StreamingEngine
-    engine = StreamingEngine(
-        model_name=args.model,
-    )
+    mic_started = False
 
-    # ------------------------------------------------------------------
-    # Graceful shutdown
-    # ------------------------------------------------------------------
-    loop = asyncio.get_event_loop()
-    shutdown = asyncio.Event()
-
-    def _sigint_handler():
-        logger.info("[main] Shutdown signal received")
-        shutdown.set()
-
-    loop.add_signal_handler(signal.SIGINT, _sigint_handler)
-    loop.add_signal_handler(signal.SIGTERM, _sigint_handler)
-
-    # ------------------------------------------------------------------
-    # Start mic capture + audio processing loop
-    # ------------------------------------------------------------------
-    logger.info("[main] Starting mic capture...")
-    mic.start()
-    logger.info("[main] Mic capture running")
-
-    audio_task = loop.create_task(audio_loop(mic, engine, shutdown))
-
-    # ------------------------------------------------------------------
-    # Hypha RPC or offline mode
-    # ------------------------------------------------------------------
-    if args.server:
-        from rpc.hypha_client import HyphaClient
-        client = HyphaClient(
-            server_url=args.server,
-            workspace=args.workspace,
-            token=args.token,
-            streaming_engine=engine,
+    try:
+        # ------------------------------------------------------------------
+        # Streaming engine (loads Whisper model)
+        # ------------------------------------------------------------------
+        logger.info("[main] Loading Whisper model '%s'...", args.model)
+        from transcribe.streaming_engine import StreamingEngine
+        engine = StreamingEngine(
+            model_name=args.model,
         )
-        logger.info("[main] Connecting to Hypha at %s (workspace: %s)...",
-                    args.server, args.workspace or "<default>")
-        rpc_task = loop.create_task(client.run())
-    else:
-        logger.info("[main] No server configured — running in offline mode")
-        rpc_task = loop.create_task(run_offline(engine, shutdown))
 
-    # Wait until shutdown signal
-    await shutdown.wait()
+        # ------------------------------------------------------------------
+        # Graceful shutdown
+        # ------------------------------------------------------------------
+        loop = asyncio.get_event_loop()
+        shutdown = asyncio.Event()
 
-    # ------------------------------------------------------------------
-    # Clean shutdown
-    # ------------------------------------------------------------------
-    logger.info("[main] Stopping...")
-    rpc_task.cancel()
-    audio_task.cancel()
-    await asyncio.gather(rpc_task, audio_task, return_exceptions=True)
+        def _sigint_handler():
+            logger.info("[main] Shutdown signal received")
+            shutdown.set()
 
-    # Flush any remaining audio context from the streaming engine.
-    final = await loop.run_in_executor(None, engine.finish_session)
-    if final:
-        logger.info("[main] Final transcript: %s", final)
+        loop.add_signal_handler(signal.SIGINT, _sigint_handler)
+        loop.add_signal_handler(signal.SIGTERM, _sigint_handler)
 
-    mic.stop()
-    logger.info("[main] Done")
+        # ------------------------------------------------------------------
+        # Start mic capture + audio processing loop
+        # ------------------------------------------------------------------
+        logger.info("[main] Starting mic capture...")
+        mic.start()
+        mic_started = True
+        logger.info("[main] Mic capture running")
+
+        audio_task = loop.create_task(audio_loop(mic, engine, shutdown))
+
+        # ------------------------------------------------------------------
+        # Hypha RPC or offline mode
+        # ------------------------------------------------------------------
+        if args.server:
+            from rpc.hypha_client import HyphaClient
+            client = HyphaClient(
+                server_url=args.server,
+                workspace=args.workspace,
+                token=args.token,
+                streaming_engine=engine,
+            )
+            logger.info("[main] Connecting to Hypha at %s (workspace: %s)...",
+                        args.server, args.workspace or "<default>")
+            rpc_task = loop.create_task(client.run())
+        else:
+            logger.info("[main] No server configured — running in offline mode")
+            rpc_task = loop.create_task(run_offline(engine, shutdown))
+
+        # Wait until shutdown signal
+        await shutdown.wait()
+
+        # ------------------------------------------------------------------
+        # Clean shutdown
+        # ------------------------------------------------------------------
+        logger.info("[main] Stopping...")
+        rpc_task.cancel()
+        audio_task.cancel()
+        await asyncio.gather(rpc_task, audio_task, return_exceptions=True)
+
+        # Flush any remaining audio context from the streaming engine.
+        final = await loop.run_in_executor(None, engine.finish_session)
+        if final:
+            logger.info("[main] Final transcript: %s", final)
+
+    except Exception as e:
+        logger.error("[main] Unexpected error: %s", e)
+        raise
+    finally:
+        # Always stop the mic to release the USB audio device
+        if mic_started:
+            mic.stop()
+        logger.info("[main] Done")
 
 
 if __name__ == "__main__":
