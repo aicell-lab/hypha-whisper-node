@@ -1,0 +1,31 @@
+interface:
+  display_name: "Hypha Whisper Node"
+  short_description: "GPU-accelerated speech-to-text transcription on NVIDIA Jetson"
+  icon_small: "./assets/whisper-icon-small.svg"
+  icon_large: "./assets/whisper-icon-large.svg"
+  brand_color: "#76B900"
+  default_prompt: |
+    Transcribe the audio file at {file_path} using the Hypha Whisper Node.
+    Use language hint '{language}' if specified.
+
+policy:
+  allow_implicit_invocation: true
+
+dependencies:
+  tools:
+    - type: "http"
+      value: "hypha_whisper_api"
+      description: "Hypha Whisper Node HTTP API for transcription services"
+      endpoints:
+        - name: "transcribe"
+          path: "/transcribe"
+          method: "POST"
+          description: "Upload audio file for transcription"
+        - name: "transcript_feed"
+          path: "/transcript_feed"
+          method: "GET"
+          description: "SSE stream for real-time transcripts"
+        - name: "health"
+          path: "/health"
+          method: "GET"
+          description: "Service health check"

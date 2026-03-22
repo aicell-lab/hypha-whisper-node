@@ -30,3 +30,7 @@ pyusb>=1.2.1                    # required for ReSpeaker DOA (Direction of Arriv
 pyroomacoustics>=0.7.0          # SRP-PHAT DOA estimation with raw mic array data
 fastapi==0.115.12
 uvicorn==0.34.0
+python-multipart>=0.0.6           # for file upload handling (FastAPI Form/File)
+soundfile>=0.12.1                 # audio file loading (wav, flac, ogg)
+# Note: ffmpeg is required for audio format conversion (mp3, m4a, etc.)
+# Install via system package manager: sudo apt-get install ffmpeg

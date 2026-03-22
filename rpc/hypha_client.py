@@ -25,15 +25,20 @@ Usage:
 
 import asyncio
 import collections
+import io
 import json
 import logging
 import os
 import queue
 import socket
+import tempfile
 import time
+import subprocess
+from typing import Optional
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+import numpy as np
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from hypha_rpc import connect_to_server
 
 logger = logging.getLogger(__name__)
@@ -114,6 +119,115 @@ def _push_to_subscribers(item) -> None:
             q.put_nowait(item)
         except asyncio.QueueFull:
             pass
+
+
+# ---------------------------------------------------------------------------
+# File transcription helpers
+# ---------------------------------------------------------------------------
+
+def _convert_to_wav(input_path: str, output_path: str) -> None:
+    """Convert audio file to 16kHz mono WAV using ffmpeg."""
+    cmd = [
+        "ffmpeg",
+        "-y",  # Overwrite output
+        "-i", input_path,
+        "-ar", "16000",  # 16kHz sample rate (Whisper expects this)
+        "-ac", "1",  # Mono
+        "-c:a", "pcm_s16le",  # 16-bit PCM
+        output_path
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120  # 2 minute timeout for conversion
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"FFmpeg conversion failed: {e.stderr}") from e
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("FFmpeg conversion timed out")
+
+
+def _load_audio_wav(wav_path: str) -> np.ndarray:
+    """Load WAV file and return numpy array of float32 audio samples."""
+    try:
+        import soundfile as sf
+        audio, sr = sf.read(wav_path, dtype="float32")
+        # Ensure mono (soundfile returns shape (n,) for mono, (n, 2) for stereo)
+        if len(audio.shape) > 1:
+            audio = audio.mean(axis=1)
+        # Resample if needed (should be 16kHz from ffmpeg)
+        if sr != 16000:
+            import librosa
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+        return audio
+    except Exception as e:
+        raise RuntimeError(f"Failed to load audio file: {e}") from e
+
+
+def _transcribe_audio_file(audio_path: str, language: Optional[str] = None) -> dict:
+    """
+    Transcribe an audio file using the loaded Whisper model.
+    
+    Args:
+        audio_path: Path to audio file (any format ffmpeg supports)
+        language: Optional language code (e.g., 'en', 'zh')
+    
+    Returns:
+        dict with transcription results including text and segments
+    """
+    import time
+    start_time = time.time()
+    
+    # Convert to WAV format that Whisper expects
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+        tmp_wav_path = tmp_wav.name
+    
+    try:
+        _convert_to_wav(audio_path, tmp_wav_path)
+        audio = _load_audio_wav(tmp_wav_path)
+        
+        # Get the Whisper model from the streaming engine
+        if _engine is None:
+            raise RuntimeError("Whisper engine not initialized")
+        
+        # Access the underlying ASR model
+        asr = _engine._online.asr
+        
+        # Run transcription
+        result = asr.transcribe(
+            audio,
+            init_prompt=os.environ.get("WHISPER_PROMPT", "")
+        )
+        
+        # Extract text and segments
+        full_text = result.get("text", "").strip()
+        segments = []
+        for seg in result.get("segments", []):
+            segments.append({
+                "start": seg.get("start"),
+                "end": seg.get("end"),
+                "text": seg.get("text", "").strip(),
+            })
+        
+        processing_time = time.time() - start_time
+        
+        return {
+            "text": full_text,
+            "segments": segments,
+            "language": result.get("language", language or "auto"),
+            "processing_time_seconds": round(processing_time, 3),
+            "duration_seconds": round(len(audio) / 16000, 3),
+        }
+    finally:
+        # Cleanup temp file
+        try:
+            os.unlink(tmp_wav_path)
+        except OSError:
+            pass
+
 
 app = FastAPI()
 
@@ -450,6 +564,88 @@ async def clear_session():
     return {"status": "cleared"}
 
 
+@app.post("/transcribe")
+async def transcribe_file(
+    file: UploadFile = File(..., description="Audio file to transcribe (wav, mp3, m4a, ogg, flac, etc.)"),
+    language: Optional[str] = Form(None, description="Optional language code (e.g., 'en', 'zh', 'es')"),
+    response_format: str = Form("json", description="Response format: 'json' or 'text'"),
+):
+    """
+    Transcribe an uploaded audio file using Whisper.
+    
+    Supports common audio formats including WAV, MP3, M4A, OGG, FLAC.
+    The audio is automatically converted to 16kHz mono WAV for processing.
+    
+    **Parameters:**
+    - `file`: Audio file to transcribe (required)
+    - `language`: Optional language hint (e.g., 'en' for English)
+    - `response_format`: 'json' (default) for full metadata or 'text' for plain text only
+    
+    **Returns:**
+    - JSON object with transcription text, segments with timestamps, processing info
+    
+    **Example usage with curl:**
+    ```bash
+    curl -X POST -F "file=@recording.mp3" https://hypha.aicell.io/your-workspace/apps/hypha-whisper/transcribe
+    ```
+    """
+    # Validate file
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    # Check file size (limit to 500MB)
+    max_size = 500 * 1024 * 1024  # 500MB
+    file_size = 0
+    chunk_size = 1024 * 1024  # 1MB chunks
+    
+    # Save uploaded file to temp location
+    suffix = os.path.splitext(file.filename)[1] or ".tmp"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_input:
+        while chunk := await file.read(chunk_size):
+            file_size += len(chunk)
+            if file_size > max_size:
+                os.unlink(tmp_input.name)
+                raise HTTPException(status_code=413, detail="File too large (max 500MB)")
+            tmp_input.write(chunk)
+        tmp_input_path = tmp_input.name
+    
+    try:
+        # Run transcription in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, _transcribe_audio_file, tmp_input_path, language
+        )
+        
+        logger.info(
+            "[transcribe] File '%s' processed: %.1fs audio in %.2fs",
+            file.filename,
+            result["duration_seconds"],
+            result["processing_time_seconds"]
+        )
+        
+        if response_format == "text":
+            return result["text"]
+        
+        return JSONResponse(content={
+            "success": True,
+            "filename": file.filename,
+            **result
+        })
+        
+    except RuntimeError as e:
+        logger.error("[transcribe] Transcription failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    except Exception as e:
+        logger.error("[transcribe] Unexpected error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+    finally:
+        # Cleanup temp file
+        try:
+            os.unlink(tmp_input_path)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Log feed
 # ---------------------------------------------------------------------------
@@ -590,8 +786,10 @@ class HyphaClient:
             logger.info(
                 "[hypha] ASGI service '%s' registered. "
                 "transcript: %s/%s/apps/%s/transcript_feed  "
+                "transcribe: %s/%s/apps/%s/transcribe  "
                 "logs: %s/%s/apps/%s/logs?tail=50",
                 SERVICE_ID,
+                self.server_url, self._server.config.workspace, SERVICE_ID,
                 self.server_url, self._server.config.workspace, SERVICE_ID,
                 self.server_url, self._server.config.workspace, SERVICE_ID,
             )
