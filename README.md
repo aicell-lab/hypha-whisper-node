@@ -43,6 +43,7 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 - Live transcript viewer — browser-based HTML page at `/`
 - ReSpeaker 4 Mic Array: hardware beamforming + 4-mic noise suppression via ch0
 - **Direction annotation** — ReSpeaker USB DOA angle tags each utterance with the speaker's direction (e.g. `45°`); note: speaker grouping is best-effort only (see known limitations)
+- **LED control** — Automatically turns off ReSpeaker's RGB LED ring on startup (no more annoying lights!)
 - Auto-reconnect to Hypha on network loss (exponential backoff)
 - systemd service with watchdog (`WatchdogSec=180`) and auto-restart
 
@@ -125,7 +126,8 @@ hypha-whisper-node/
 ├── main.py                      # Entry point, orchestrates all components
 ├── audio/
 │   ├── capture.py               # PyAudio microphone capture
-│   └── doa_reader.py            # ReSpeaker USB DOA + IntervalBuffer
+│   ├── doa_reader.py            # ReSpeaker USB DOA + IntervalBuffer
+│   └── led_control.py           # Turn off ReSpeaker LEDs on startup
 ├── transcribe/
 │   ├── streaming_engine.py      # Whisper + LocalAgreement + DOA alignment
 │   ├── speaker_registry.py      # Direction-based speaker labeling

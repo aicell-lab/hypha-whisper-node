@@ -17,6 +17,8 @@ from typing import Optional
 import numpy as np
 import pyaudio
 
+from audio.led_control import led_off
+
 # Silence ALSA lib error messages (they spam stderr when PyAudio
 # probes unavailable virtual PCM devices like hdmi, modem, rear, etc.)
 try:
@@ -88,6 +90,10 @@ class MicCapture:
         self._dev_index, self._dev_name, self._cap_ch, self._out_ch = found
         logger.info("[MicCapture] Using '%s' (channels=%d, output_ch=%d)",
                     self._dev_name, self._cap_ch, self._out_ch)
+
+        # Turn off ReSpeaker LED ring (those lights are annoying!)
+        if "ReSpeaker" in self._dev_name:
+            led_off()
 
         self._pa: Optional[pyaudio.PyAudio] = None
         self._stream: Optional[pyaudio.Stream] = None

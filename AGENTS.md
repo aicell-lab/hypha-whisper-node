@@ -49,7 +49,9 @@ hypha-whisper-node/
 │
 ├── audio/                       # Audio capture modules
 │   ├── capture.py               # MicCapture: PyAudio-based microphone capture
-│   └── doa_reader.py            # DOAReader: USB DOA angle from ReSpeaker
+│   ├── doa_reader.py            # DOAReader: USB DOA angle from ReSpeaker
+│   ├── led_control.py           # led_off(): turn off ReSpeaker LEDs
+│   └── tuning.py                # Vendored from respeaker/usb_4_mic_array
 │
 ├── transcribe/                  # Speech recognition modules
 │   ├── streaming_engine.py      # StreamingEngine: wraps OnlineASRProcessor
