@@ -185,6 +185,11 @@ class MockStreamingEngine:
         self._responses = responses or ["Hello from mock streaming."]
         self._idx = 0
         self._session_active = False
+        self._listening_active = True  # Paused when no SSE clients connected
+
+    def set_listening_active(self, active: bool) -> None:
+        """Enable/disable transcription processing."""
+        self._listening_active = active
 
     def init_session(self, offset=None) -> None:
         self._session_active = True

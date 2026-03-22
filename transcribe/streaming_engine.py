@@ -133,6 +133,7 @@ class StreamingEngine:
         self.model_name = model_name
         self.text_queue: queue.Queue = queue.Queue()
         self._finished = False
+        self._listening_active = True  # Paused when no SSE clients connected
         
         # Session timing for DOA timestamp conversion
         # process_iter() returns begin/end relative to this time
@@ -237,6 +238,16 @@ class StreamingEngine:
     # Session lifecycle
     # ------------------------------------------------------------------
 
+    def set_listening_active(self, active: bool) -> None:
+        """Enable/disable transcription processing.
+
+        Called when first SSE client connects (active=True) or last
+        client disconnects (active=False). When inactive, audio is
+        discarded without processing to save GPU resources.
+        """
+        self._listening_active = active
+        logger.info("[StreamingEngine] Listening %s", "active" if active else "paused")
+
     def init_session(self, offset: Optional[float] = None) -> None:
         """Reset streaming state for a new client connection.
 
@@ -291,8 +302,9 @@ class StreamingEngine:
                 if text:
                     audio_snapshot = list(self._audio_since_last_commit)
                     self._audio_since_last_commit = []
-                    commit_time = self._last_commit_time
-                    self._emit_item_async(text, audio_snapshot, commit_time)
+                    segment_start = self._last_commit_time
+                    segment_end = time.monotonic()
+                    self._emit_item_async(text, audio_snapshot, segment_start, segment_end)
                     logger.info("[StreamingEngine] Pre-flush committed: %r", text)
         except Exception as exc:
             logger.warning("[StreamingEngine] pre-flush process_iter raised: %s", exc)
@@ -306,8 +318,9 @@ class StreamingEngine:
         if text:
             audio_snapshot = list(self._audio_since_last_commit)
             self._audio_since_last_commit = []
-            commit_time = self._last_commit_time
-            self._emit_item_async(text, audio_snapshot, commit_time)
+            segment_start = self._last_commit_time
+            segment_end = time.monotonic()
+            self._emit_item_async(text, audio_snapshot, segment_start, segment_end)
             logger.info("[StreamingEngine] Flushed final: %r", text)
 
         # Wait for any in-flight speaker ID tasks to complete and push their items
@@ -332,6 +345,10 @@ class StreamingEngine:
         Returns:
             Committed text string, or None if nothing committed yet.
         """
+        # Skip processing when no clients are connected (save GPU power)
+        if not self._listening_active:
+            return None
+
         # Read DOA from firmware at capture time (not emit time) to avoid 
         # misattribution when speakers change during the buffering period.
         # The ReSpeaker firmware's built-in DOA algorithm processes raw mics on-chip.

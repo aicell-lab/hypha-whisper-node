@@ -170,6 +170,8 @@ async def main():
                 workspace=args.workspace,
                 token=args.token,
                 streaming_engine=engine,
+                on_first_client=lambda: engine.set_listening_active(True),
+                on_last_client=lambda: engine.set_listening_active(False),
             )
             logger.info("[main] Connecting to Hypha at %s (workspace: %s)...",
                         args.server, args.workspace or "<default>")

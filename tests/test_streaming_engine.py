@@ -63,6 +63,20 @@ def test_mock_streaming_engine_session_reset(mock_engine):
     assert len(items) >= 1
 
 
+def test_mock_streaming_engine_listening_active(mock_engine):
+    """set_listening_active() pauses/resumes transcription processing."""
+    # Initially active
+    assert mock_engine._listening_active is True
+
+    # Pause listening
+    mock_engine.set_listening_active(False)
+    assert mock_engine._listening_active is False
+
+    # Resume listening
+    mock_engine.set_listening_active(True)
+    assert mock_engine._listening_active is True
+
+
 # ---------------------------------------------------------------------------
 # Hardware tests — require GPU + whisper-timestamped installed
 # ---------------------------------------------------------------------------
@@ -119,3 +133,26 @@ def test_streaming_engine_init_session_resets_queue():
     # init_session should drain it
     engine.init_session()
     assert engine.text_queue.empty(), "init_session() should drain stale text"
+
+
+@pytest.mark.hardware
+def test_streaming_engine_listening_active_flag():
+    """set_listening_active(False) prevents process_audio from running inference."""
+    from transcribe.streaming_engine import StreamingEngine
+    engine = StreamingEngine(model_name="tiny.en", use_vac=False)
+
+    # Initially active
+    assert engine._listening_active is True
+
+    # Pause listening
+    engine.set_listening_active(False)
+    assert engine._listening_active is False
+
+    # process_audio should return None immediately without processing
+    chunk = _make_silence_f32(0.5)
+    result = engine.process_audio(chunk)
+    assert result is None
+
+    # Resume listening
+    engine.set_listening_active(True)
+    assert engine._listening_active is True
