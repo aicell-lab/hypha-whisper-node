@@ -156,3 +156,118 @@ def test_streaming_engine_listening_active_flag():
     # Resume listening
     engine.set_listening_active(True)
     assert engine._listening_active is True
+
+
+# ---------------------------------------------------------------------------
+# Hallucination filter tests (no GPU required)
+# ---------------------------------------------------------------------------
+
+def test_hallucination_filter_word_loop():
+    """Detect word repetition like 'Okay, Okay, Okay...'"""
+    from transcribe.streaming_engine import HallucinationFilter
+    
+    filt = HallucinationFilter()
+    
+    # These should be flagged as hallucinations
+    assert filt.is_hallucination("Okay, Okay, Okay") is True
+    assert filt.is_hallucination("Yeah. Yeah. Yeah.") is True
+    assert filt.is_hallucination("thanks thanks thanks") is True
+    
+    # Reset and check trailing repetition
+    filt.reset()
+    assert filt.is_hallucination("so okay okay okay") is True
+    
+    # These should be fine
+    filt.reset()
+    assert filt.is_hallucination("Okay, thank you") is False
+    assert filt.is_hallucination("The meeting is okay") is False
+
+
+def test_hallucination_filter_phrase_loop():
+    """Detect phrase repetition like 'thank you, thank you'"""
+    from transcribe.streaming_engine import HallucinationFilter
+    
+    filt = HallucinationFilter()
+    
+    # 2-word phrase repetition
+    assert filt.is_hallucination("thank you thank you") is True
+    assert filt.is_hallucination("yes yes yes") is True
+    
+    # 3-word phrase repetition  
+    filt.reset()
+    assert filt.is_hallucination("I see okay I see okay") is True
+
+
+def test_hallucination_filter_exact_duplicate():
+    """Detect exact duplicate of previous output"""
+    from transcribe.streaming_engine import HallucinationFilter
+    
+    filt = HallucinationFilter()
+    
+    # First occurrence should pass
+    assert filt.is_hallucination("Hello world") is False
+    # Exact duplicate should be blocked
+    assert filt.is_hallucination("Hello world") is True
+    # Different text should pass
+    assert filt.is_hallucination("Goodbye world") is False
+
+
+def test_hallucination_filter_ngram_loop():
+    """Detect n-gram repetition patterns"""
+    from transcribe.streaming_engine import HallucinationFilter
+    
+    filt = HallucinationFilter()
+    
+    # 2-gram loop
+    assert filt.is_hallucination("ab ab ab ab ab") is True
+    
+    # Reset and check 3-gram loop (word level)
+    filt.reset()
+    assert filt.is_hallucination("one two three one two three") is True
+
+
+def test_hallucination_filter_hyphen_stutter():
+    """Detect hyphen-stutter like 'O-Okay'"""
+    from transcribe.streaming_engine import HallucinationFilter
+    
+    filt = HallucinationFilter()
+    
+    # Stutter patterns should be blocked
+    assert filt.is_hallucination("O-Okay") is True
+    assert filt.is_hallucination("t-thanks") is True
+    assert filt.is_hallucination("S-Sorry about that") is True
+    
+    # Legitimate hyphenated words should pass
+    filt.reset()
+    assert filt.is_hallucination("X-ray") is False
+    assert filt.is_hallucination("T-shirt") is False
+
+
+def test_hallucination_filter_ellipsis_loop():
+    """Detect ellipsis repetition patterns"""
+    from transcribe.streaming_engine import HallucinationFilter
+    
+    filt = HallucinationFilter()
+    
+    # Repeated with ellipses
+    assert filt.is_hallucination("Okay... Okay...") is True
+    assert filt.is_hallucination("um... um... um") is True
+
+
+def test_hallucination_filter_normal_text():
+    """Normal sentences should not be flagged"""
+    from transcribe.streaming_engine import HallucinationFilter
+    
+    filt = HallucinationFilter()
+    
+    # Normal speech
+    assert filt.is_hallucination("The quick brown fox jumps over the lazy dog") is False
+    assert filt.is_hallucination("Let's schedule a meeting for tomorrow") is False
+    assert filt.is_hallucination("Thank you very much for your help") is False
+    assert filt.is_hallucination("I think that's a good idea") is False
+    
+    # Single words are fine
+    filt.reset()
+    assert filt.is_hallucination("Okay") is False
+    assert filt.is_hallucination("Yes") is False
+    assert filt.is_hallucination("Thanks") is False

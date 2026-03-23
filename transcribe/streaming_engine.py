@@ -16,6 +16,7 @@ backwards compatibility.
 import concurrent.futures
 import logging
 import queue
+import re
 import sys
 import os
 import time
@@ -24,6 +25,125 @@ from typing import Optional
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+class HallucinationFilter:
+    """Filters common Whisper hallucination patterns.
+    
+    Whisper (especially in streaming scenarios) can get stuck repeating words
+    like "Okay, Okay..." or phrases. This filter detects and blocks such outputs.
+    
+    Detected patterns:
+    - Word loops: "word, word, word..." (same word repeated 3+ times)
+    - Phrase loops: "phrase, phrase..." (multi-word phrase repeated)
+    - Exact duplicates: same text as previous output
+    - N-gram loops: repeated sequences like "abc abc abc"
+    - Hyphen-stutter: "O-Okay" or similar
+    """
+    
+    def __init__(self, max_repeats: int = 3):
+        self.max_repeats = max_repeats
+        self._last_text: Optional[str] = None
+        self._recent_texts: list = []
+        self._max_history = 5
+    
+    def is_hallucination(self, text: str) -> bool:
+        """Check if text appears to be a hallucination.
+        
+        Returns True if the text should be blocked.
+        """
+        if not text or not text.strip():
+            return False
+            
+        text = text.strip()
+        
+        # 1. Exact duplicate of last output
+        if text == self._last_text:
+            logger.debug("[HallucinationFilter] Blocked: exact duplicate")
+            return True
+        
+        # 2. Word-level repetition: "word, word, word..."
+        words = [w.strip(".,!?;:()[]{}\"'").lower() for w in text.split()]
+        words = [w for w in words if w]
+        
+        if len(words) >= self.max_repeats:
+            # Check if all words are the same
+            if len(set(words)) == 1:
+                logger.warning("[HallucinationFilter] Blocked word loop: %r", text)
+                return True
+            
+            # Check for trailing repetition: "hello okay okay okay"
+            last_word = words[-1]
+            trailing_count = 0
+            for w in reversed(words):
+                if w == last_word:
+                    trailing_count += 1
+                else:
+                    break
+            if trailing_count >= self.max_repeats:
+                logger.warning("[HallucinationFilter] Blocked trailing word loop (%dx %r): %r", 
+                             trailing_count, last_word, text)
+                return True
+        
+        # 3. N-gram repetition: "abc abc abc" or "ab ab ab"
+        for n in [6, 5, 4, 3, 2]:
+            if len(words) >= n * 2:
+                # Check if text consists of repeated n-grams
+                ngram = tuple(words[:n])
+                repeated = True
+                for i in range(n, len(words), n):
+                    chunk = tuple(words[i:i+n])
+                    if chunk != ngram:
+                        repeated = False
+                        break
+                if repeated:
+                    logger.warning("[HallucinationFilter] Blocked %d-gram loop: %r", n, text)
+                    return True
+        
+        # 4. Short phrase repetition: "okay, okay" or "yeah, yeah, yeah"
+        # Pattern: short phrase (1-3 words) repeated with separators
+        text_clean = re.sub(r'[,;.!?]', ' ', text.lower())
+        text_clean = re.sub(r'\s+', ' ', text_clean).strip()
+        for phrase_len in [3, 2, 1]:
+            if len(words) >= phrase_len * 2:
+                phrase = tuple(words[:phrase_len])
+                all_same = all(tuple(words[i:i+phrase_len]) == phrase 
+                              for i in range(0, len(words), phrase_len) 
+                              if i + phrase_len <= len(words))
+                if all_same:
+                    logger.warning("[HallucinationFilter] Blocked phrase loop (%d-gram): %r", 
+                                 phrase_len, text)
+                    return True
+        
+        # 5. Hyphen-stutter: "O-Okay", "t-thanks", "s-sorry"
+        if re.search(r'\b[a-zA-Z]-[a-zA-Z]{2,}', text):
+            # Allow legitimate hyphenated words like "X-ray", "T-shirt"
+            # But block stutter patterns
+            stutter_pattern = re.findall(r'\b([a-zA-Z])-\1[a-z]+\b', text, re.IGNORECASE)
+            if stutter_pattern:
+                logger.warning("[HallucinationFilter] Blocked hyphen-stutter: %r", text)
+                return True
+        
+        # 6. Ellipsis repetition: "word... word..." or trailing "..."
+        if text.count('...') >= 2 or text.endswith('...'):
+            # Check for repetition with ellipses
+            parts = [p.strip() for p in text.split('...') if p.strip()]
+            if len(parts) >= 2 and len(set(parts)) == 1:
+                logger.warning("[HallucinationFilter] Blocked ellipsis loop: %r", text)
+                return True
+        
+        # Update history
+        self._last_text = text
+        self._recent_texts.append(text)
+        if len(self._recent_texts) > self._max_history:
+            self._recent_texts.pop(0)
+        
+        return False
+    
+    def reset(self):
+        """Reset filter state for new session."""
+        self._last_text = None
+        self._recent_texts = []
 
 DEFAULT_MODEL = "base.en"
 
@@ -178,6 +298,9 @@ class StreamingEngine:
         self._audio_since_last_commit: list = []
         self._last_commit_time: float = 0.0
 
+        # Hallucination filter to block repetitive outputs like "Okay, Okay..."
+        self._hallucination_filter = HallucinationFilter()
+
         # Thread pool for async speaker identification (1 worker to avoid concurrent CUDA calls)
         self._speaker_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         if self._speaker_registry is not None:
@@ -272,6 +395,8 @@ class StreamingEngine:
             self._doa_buffer.clear()
         if self._speaker_registry is not None:
             self._speaker_registry.reset()
+        # Reset hallucination filter for new session
+        self._hallucination_filter.reset()
         logger.info("[StreamingEngine] Session initialised")
 
     def finish_session(self) -> Optional[str]:
@@ -300,12 +425,16 @@ class StreamingEngine:
                 begin, end, text = self._online.online.process_iter()
                 text = text.strip() if text else ""
                 if text:
-                    audio_snapshot = list(self._audio_since_last_commit)
-                    self._audio_since_last_commit = []
-                    segment_start = self._last_commit_time
-                    segment_end = time.monotonic()
-                    self._emit_item_async(text, audio_snapshot, segment_start, segment_end)
-                    logger.info("[StreamingEngine] Pre-flush committed: %r", text)
+                    # Check for hallucination
+                    if self._hallucination_filter.is_hallucination(text):
+                        logger.warning("[StreamingEngine] Hallucination detected in pre-flush: %r", text)
+                    else:
+                        audio_snapshot = list(self._audio_since_last_commit)
+                        self._audio_since_last_commit = []
+                        segment_start = self._last_commit_time
+                        segment_end = time.monotonic()
+                        self._emit_item_async(text, audio_snapshot, segment_start, segment_end)
+                        logger.info("[StreamingEngine] Pre-flush committed: %r", text)
         except Exception as exc:
             logger.warning("[StreamingEngine] pre-flush process_iter raised: %s", exc)
 
@@ -316,6 +445,11 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
+            # Also check hallucination on final flush
+            if self._hallucination_filter.is_hallucination(text):
+                logger.warning("[StreamingEngine] Hallucination detected in final flush: %r", text)
+                return None
+            
             audio_snapshot = list(self._audio_since_last_commit)
             self._audio_since_last_commit = []
             segment_start = self._last_commit_time
@@ -372,6 +506,13 @@ class StreamingEngine:
             return None
         text = text.strip() if text else ""
         if text:
+            # Check for hallucination patterns before committing
+            if self._hallucination_filter.is_hallucination(text):
+                logger.warning("[StreamingEngine] Hallucination detected and filtered: %r", text)
+                # Still reset audio buffer to prevent buildup
+                self._audio_since_last_commit = []
+                return None
+            
             # Snapshot audio buffer and reset before async embedding so subsequent
             # audio is not included in this segment's embedding.
             audio_snapshot = list(self._audio_since_last_commit)
@@ -383,7 +524,7 @@ class StreamingEngine:
             segment_end = self._session_start_time + (end or 0)
             
             self._emit_item_async(text, audio_snapshot, segment_start, segment_end)
-            logger.debug("[StreamingEngine] Committed [%.2f–%.2f] (text not logged)", begin or 0, end or 0)
+            logger.debug("[StreamingEngine] Committed [%.2f–%.2f]: %r", begin or 0, end or 0, text)
             return text
         return None
 
