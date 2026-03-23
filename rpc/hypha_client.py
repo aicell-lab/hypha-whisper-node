@@ -55,6 +55,10 @@ _engine = None
 _text_queue = None
 _start_time: float = 0.0
 
+# Global lock for transcription operations to prevent concurrent model access
+_transcription_lock: Optional[asyncio.Lock] = None
+_engine_busy: bool = False
+
 # Multi-client fan-out state.
 # Each connected SSE client gets its own asyncio.Queue in _subscribers.
 # _broadcast_loop() drains _text_queue and copies each item to all subscribers.
@@ -283,6 +287,18 @@ async def live_transcript_page():
     }
     #status.connected { background: #d4edda; color: #155724; }
     #status.error     { background: #f8d7da; color: #721c24; }
+    #status.busy      { background: #fff3cd; color: #856404; }
+    #busy-banner {
+      display: none;
+      background: #fff3cd;
+      color: #856404;
+      padding: 10px 15px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      text-align: center;
+      border: 1px solid #ffeaa7;
+    }
+    #busy-banner.show { display: block; }
     #transcript-box {
       flex: 1;
       background: #fff;
@@ -334,6 +350,7 @@ async def live_transcript_page():
     <h1>Hypha Whisper &mdash; Live Transcript</h1>
     <span id="status">Connecting…</span>
   </header>
+  <div id="busy-banner">🔄 Whisper engine is busy processing a file. Real-time transcription is paused.</div>
   <div id="transcript-box"></div>
   <footer>
     <button onclick="clearSession()">Clear</button>
@@ -446,6 +463,29 @@ async def live_transcript_page():
     }
 
     connect();
+
+    // Poll health endpoint to check if engine is busy
+    const busyBanner = document.getElementById('busy-banner');
+    async function checkHealth() {
+      try {
+        const resp = await fetch('health');
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.busy) {
+            busyBanner.classList.add('show');
+            status.textContent = '● Connected (busy)';
+            status.className = 'busy';
+          } else {
+            busyBanner.classList.remove('show');
+          }
+        }
+      } catch (e) {
+        // Ignore health check errors
+      }
+    }
+    // Check health every 2 seconds
+    setInterval(checkHealth, 2000);
+    checkHealth();
   </script>
 </body>
 </html>""")
@@ -547,10 +587,12 @@ async def transcript_feed():
 
 @app.get("/health")
 async def health():
+    global _engine_busy
     return {
         "status": "ok",
         "model": getattr(_engine, "model_name", "unknown"),
         "uptime_seconds": round(time.time() - _start_time),
+        "busy": _engine_busy,
     }
 
 
@@ -573,6 +615,9 @@ async def transcribe_file(
     """
     Transcribe an uploaded audio file using Whisper.
     
+    This endpoint is mutually exclusive with real-time streaming. If the engine
+    is currently processing another file, this request will return HTTP 503.
+    
     Supports common audio formats including WAV, MP3, M4A, OGG, FLAC.
     The audio is automatically converted to 16kHz mono WAV for processing.
     
@@ -583,67 +628,86 @@ async def transcribe_file(
     
     **Returns:**
     - JSON object with transcription text, segments with timestamps, processing info
+    - HTTP 503 if engine is busy processing another file
     
     **Example usage with curl:**
     ```bash
     curl -X POST -F "file=@recording.mp3" https://hypha.aicell.io/your-workspace/apps/hypha-whisper/transcribe
     ```
     """
-    # Validate file
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
+    global _transcription_lock, _engine_busy
     
-    # Check file size (limit to 500MB)
-    max_size = 500 * 1024 * 1024  # 500MB
-    file_size = 0
-    chunk_size = 1024 * 1024  # 1MB chunks
+    # Initialize lock if not exists (first request)
+    if _transcription_lock is None:
+        _transcription_lock = asyncio.Lock()
     
-    # Save uploaded file to temp location
-    suffix = os.path.splitext(file.filename)[1] or ".tmp"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_input:
-        while chunk := await file.read(chunk_size):
-            file_size += len(chunk)
-            if file_size > max_size:
-                os.unlink(tmp_input.name)
-                raise HTTPException(status_code=413, detail="File too large (max 500MB)")
-            tmp_input.write(chunk)
-        tmp_input_path = tmp_input.name
-    
-    try:
-        # Run transcription in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, _transcribe_audio_file, tmp_input_path, language
+    # Try to acquire lock without blocking - return 503 if busy
+    if _transcription_lock.locked():
+        raise HTTPException(
+            status_code=503,
+            detail="Whisper engine is busy processing another file. Please wait and retry."
         )
-        
-        logger.info(
-            "[transcribe] File '%s' processed: %.1fs audio in %.2fs",
-            file.filename,
-            result["duration_seconds"],
-            result["processing_time_seconds"]
-        )
-        
-        if response_format == "text":
-            return result["text"]
-        
-        return JSONResponse(content={
-            "success": True,
-            "filename": file.filename,
-            **result
-        })
-        
-    except RuntimeError as e:
-        logger.error("[transcribe] Transcription failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
-    except Exception as e:
-        logger.error("[transcribe] Unexpected error: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
-    finally:
-        # Cleanup temp file
+    
+    async with _transcription_lock:
+        _engine_busy = True
         try:
-            os.unlink(tmp_input_path)
-        except OSError:
-            pass
+            # Validate file
+            if not file.filename:
+                raise HTTPException(status_code=400, detail="No file provided")
+            
+            # Check file size (limit to 500MB)
+            max_size = 500 * 1024 * 1024  # 500MB
+            file_size = 0
+            chunk_size = 1024 * 1024  # 1MB chunks
+            
+            # Save uploaded file to temp location
+            suffix = os.path.splitext(file.filename)[1] or ".tmp"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_input:
+                while chunk := await file.read(chunk_size):
+                    file_size += len(chunk)
+                    if file_size > max_size:
+                        os.unlink(tmp_input.name)
+                        raise HTTPException(status_code=413, detail="File too large (max 500MB)")
+                    tmp_input.write(chunk)
+                tmp_input_path = tmp_input.name
+            
+            try:
+                # Run transcription in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, _transcribe_audio_file, tmp_input_path, language
+                )
+                
+                logger.info(
+                    "[transcribe] File '%s' processed: %.1fs audio in %.2fs",
+                    file.filename,
+                    result["duration_seconds"],
+                    result["processing_time_seconds"]
+                )
+                
+                if response_format == "text":
+                    return result["text"]
+                
+                return JSONResponse(content={
+                    "success": True,
+                    "filename": file.filename,
+                    **result
+                })
+                
+            except RuntimeError as e:
+                logger.error("[transcribe] Transcription failed: %s", e)
+                raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+            except Exception as e:
+                logger.error("[transcribe] Unexpected error: %s", e, exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+            finally:
+                # Cleanup temp file
+                try:
+                    os.unlink(tmp_input_path)
+                except OSError:
+                    pass
+        finally:
+            _engine_busy = False
 
 
 # ---------------------------------------------------------------------------

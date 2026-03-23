@@ -63,12 +63,13 @@ hypha-whisper-node/
 │
 ├── tests/                       # Test suite
 │   ├── conftest.py              # Shared fixtures (MockMicCapture, MockStreamingEngine)
-│   ├── test_streaming_engine.py # Unit + hardware tests for StreamingEngine
-│   ├── test_hypha.py            # ASGI endpoint + Hypha integration tests
-│   ├── test_speaker_registry.py # Speaker identification tests
-│   ├── test_hardware_loopback.py # Acoustic loopback tests (speaker → mic → WER)
-│   ├── test_stress.py           # 30-min stress test (@slow @hardware)
-│   └── test_multi_client_sse.py # Multi-client SSE fan-out tests
+│   ├── test_streaming_engine.py    # Unit + hardware tests for StreamingEngine
+│   ├── test_hypha.py               # ASGI endpoint + Hypha integration tests
+│   ├── test_speaker_registry.py    # Speaker identification tests
+│   ├── test_transcribe_busy_state.py # File transcription busy state tests
+│   ├── test_hardware_loopback.py   # Acoustic loopback tests (speaker → mic → WER)
+│   ├── test_stress.py              # 30-min stress test (@slow @hardware)
+│   └── test_multi_client_sse.py    # Multi-client SSE fan-out tests
 │
 ├── scripts/
 │   └── run_hardware_tests.sh    # Hardware test runner with service management
@@ -79,6 +80,10 @@ hypha-whisper-node/
 │
 ├── docs/
 │   └── hardware.md              # Hardware setup guide
+│
+├── .agents/
+│   └── skills/                  # OpenAI/Kimi agent skills
+│       └── hypha-whisper-client/  # Skill for interacting with webapp/endpoints
 │
 ├── setup.sh                     # One-shot install script for Jetson
 ├── requirements.txt             # Production dependencies (numpy==1.26.4 pinned!)
@@ -197,6 +202,14 @@ echo "<username> ALL=(ALL) NOPASSWD: /bin/systemctl start hypha-whisper, /bin/sy
 pytest tests/test_hardware_loopback.py -m hardware -v
 ```
 
+### Unit Test Coverage
+| Test File | Description |
+|-----------|-------------|
+| `test_streaming_engine.py` | Streaming engine lifecycle, session management, hallucination filter |
+| `test_speaker_registry.py` | Direction-based speaker identification logic |
+| `test_multi_client_sse.py` | Multi-client SSE fan-out behavior |
+| `test_transcribe_busy_state.py` | File transcription mutual exclusion, busy state API |
+
 ### Hardware Test Coverage
 | Test | Description |
 |------|-------------|
@@ -263,7 +276,7 @@ Endpoints exposed via Hypha RPC:
 - `GET /` — Live transcript viewer (HTML + SSE)
 - `GET /transcript_feed` — SSE stream of transcripts
 - `POST /transcribe` — Upload audio file for transcription (wav, mp3, m4a, etc.)
-- `GET /health` — JSON status
+- `GET /health` — JSON status including `busy` field (true when processing file upload)
 - `GET /logs?tail=N` — SSE stream of Python logs
 - `POST /clear` — Reset session and notify clients
 
@@ -302,6 +315,20 @@ curl -X POST \
 **Limits:**
 - Maximum file size: 500MB
 - Audio is automatically converted to 16kHz mono WAV
+
+**Mutual Exclusion:**
+The file transcription endpoint is mutually exclusive with real-time streaming. Only one file transcription can run at a time:
+
+- When a file is being transcribed, the engine is marked as `busy`
+- Concurrent upload requests receive HTTP 503 with message: *"Whisper engine is busy processing another file. Please wait and retry."*
+- The live transcript webapp displays a "🔄 Whisper engine is busy processing a file" banner when busy
+- Long audio files will block subsequent requests until processing completes
+
+**Check Engine Status:**
+```bash
+curl https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health
+# Returns: {"status": "ok", "busy": false, "model": "small.en", ...}
+```
 
 ### Session Lifecycle
 - `init_session()` — Called at startup (main.py), resets LocalAgreement state
@@ -431,6 +458,30 @@ Now every commit will automatically include Kimi as a co-author. GitHub will rec
 - Runs on `ubuntu-latest` with CPU-only PyTorch
 - Excludes `@hardware`, `@slow` markers
 - Includes `@integration` tests when `HYPHA_WORKSPACE_TOKEN` secret is set
+
+---
+
+## Agent Skills
+
+This project includes an OpenAI/Kimi-compatible agent skill for interacting with the hypha-whisper service:
+
+**Location:** `.agents/skills/hypha-whisper-client/`
+
+**Use cases:**
+- Check transcription service status
+- Upload audio files for batch transcription
+- Monitor live transcripts programmatically
+- Troubleshoot service issues
+
+**Installation (for Kimi Code CLI):**
+```bash
+# Copy skill to user skills directory
+cp -r .agents/skills/hypha-whisper-client ~/.config/agents/skills/
+```
+
+**Skill contents:**
+- `SKILL.md` — Main skill instructions with endpoint reference
+- `references/python-examples.md` — Complete Python code examples
 
 ---
 
