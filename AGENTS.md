@@ -21,7 +21,7 @@ The system runs continuously as a systemd service, providing a live transcript v
 |-----------|------------|
 | Language | Python 3.10 |
 | ML Framework | PyTorch 2.5.0 (NVIDIA JetPack wheel) |
-| ASR Engine | OpenAI Whisper, whisper-timestamped, faster-whisper |
+| ASR Engine | whisper-timestamped (default), faster-whisper (available, unused) |
 | Streaming Algorithm | whisper_streaming LocalAgreement (vendored) |
 | VAD | Silero VAD (vendored iterator) |
 | Audio I/O | PyAudio |
@@ -148,13 +148,12 @@ sudo systemctl enable --now hypha-whisper
 
 ### Manual (development)
 ```bash
-# With Hypha streaming
+# With Hypha streaming (uses whisper-timestamped backend by default)
 python3 main.py \
   --server https://hypha.aicell.io/ \
   --workspace my-workspace \
   --token my-token \
-  --model small.en \
-  --backend whisper-timestamped
+  --model small.en
 
 # Override microphone
 python3 main.py --mic "ReSpeaker"     # Force ReSpeaker
@@ -261,6 +260,8 @@ _broadcast_loop → SSE clients
 
 ### Streaming Engine
 - Uses `VACOnlineASRProcessor` (Silero VAD + OnlineASRProcessor)
+- **Backend**: `_OptimizedWhisperTimestampedASR` (whisper-timestamped) — hardcoded in `streaming_engine.py`
+  - Note: `faster-whisper` is installed but not currently used (available in `whisper_online.py` for future use)
 - Implements LocalAgreement algorithm: text commits only when two consecutive passes agree
 - Commit latency: ~3-5 seconds (trade-off for accuracy, eliminates word-boundary errors)
 - Hallucination filter detects: word loops, phrase loops, exact duplicates, n-gram loops, hyphen-stutter
