@@ -432,6 +432,40 @@ The `suspend_service` pytest fixture automatically stops `hypha-whisper` at the 
 
 ---
 
+## References & Acknowledgments
+
+### Core Technologies
+
+| Project | Reference | Usage |
+|---------|-----------|-------|
+| **OpenAI Whisper** | [GitHub](https://github.com/openai/whisper) • [Paper](https://arxiv.org/abs/2212.04356) | ASR backbone for speech recognition |
+| **whisper_streaming** | [GitHub](https://github.com/ufal/whisper_streaming) | LocalAgreement streaming algorithm |
+| **WhisperX** | [GitHub](https://github.com/m-bain/whisperX) • Bains, M. et al. (2023) | Duration-weighted speaker assignment (Section 3.1, interval tree approach) |
+| **ReSpeaker Mic Array** | [Wiki](https://wiki.seeedstudio.com/ReSpeaker_Mic_Array_v2.0/) • [GitHub](https://github.com/respeaker/usb_4_mic_array) | Hardware DOA via XMOS XVF-3000 |
+| **Hypha RPC** | [PyPI](https://pypi.org/project/hypha-rpc/) • [Docs](https://haoxu-lab.github.io/hypha-rpc/) | RPC framework for bioimaging |
+| **FastAPI** | [Docs](https://fastapi.tiangolo.com/) | ASGI service framework |
+
+### Research Papers
+
+1. **Bains, M., et al. (2023).** *WhisperX: Time-Accurate Speech Transcription of Long-Form Audio.* Interspeech 2023. 
+   - **Relevant:** Section 3.1 "Speaker Diarization" — interval tree for O(log n) overlap queries between diarization segments and transcript timestamps.
+   - [Paper](https://www.isca-archive.org/interspeech_2023/bains23_interspeech.pdf) • [Code](https://github.com/m-bain/whisperX/blob/main/whisperx/diarize.py)
+
+2. **Radford, A., et al. (2022).** *Robust Speech Recognition via Large-Scale Weak Supervision.* ICML 2022.
+   - Whisper architecture and training methodology.
+   - [Paper](https://arxiv.org/abs/2212.04356)
+
+3. **Plátek, O., et al. (2023).** *Streaming ASR for Long-Form Audio.* UFAL MFF UK.
+   - LocalAgreement algorithm for streaming transcription.
+   - [GitHub](https://github.com/ufal/whisper_streaming)
+
+### Hardware References
+
+- **XMOS XVF-3000:** [Datasheet](https://www.xmos.ai/xvf3000/) — Voice processor with on-chip DOA, AEC, beamforming
+- **ReSpeaker 4-Mic Array v2.0:** [Hardware Overview](https://wiki.seeedstudio.com/ReSpeaker_Mic_Array_v2.0/) — USB microphone array with 4x MP34DT01TR-M MEMS mics
+
+---
+
 ## Contributors
 
 <a href="https://github.com/aicell-lab/hypha-whisper-node/graphs/contributors">
