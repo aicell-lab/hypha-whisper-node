@@ -11,7 +11,10 @@ beamformed output — the other 5 channels are raw mics + playback ref.
 
 import ctypes
 import logging
+import os
 import queue
+import subprocess
+import time
 from typing import Optional
 
 import numpy as np
@@ -115,8 +118,75 @@ class MicCapture:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def _reset_usb_device(self) -> bool:
+        """Attempt to reset the USB audio device via usbreset.
+        
+        This can recover from 'Unanticipated host error' (-9999) which often
+        occurs when the ReSpeaker mic array gets into a bad state.
+        
+        Returns:
+            True if reset was attempted, False otherwise.
+        """
+        if "ReSpeaker" not in self._dev_name:
+            return False
+        
+        # ReSpeaker 4 Mic Array VID:PID
+        VENDOR_ID = "2886"
+        PRODUCT_ID = "0018"
+        
+        try:
+            # Find the USB device path
+            result = subprocess.run(
+                ["lsusb"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            for line in result.stdout.splitlines():
+                if f"{VENDOR_ID}:{PRODUCT_ID}" in line:
+                    # Parse bus and device from lsusb output
+                    # Format: Bus XXX Device YYY: ID 2886:0018 ...
+                    parts = line.split()
+                    bus = parts[1]
+                    device = parts[3].rstrip(":")
+                    device_path = f"/dev/bus/usb/{bus}/{device}"
+                    
+                    logger.warning("[MicCapture] Attempting USB reset of %s", device_path)
+                    
+                    # Run usbreset (try sudo first for systemd service context)
+                    reset_result = subprocess.run(
+                        ["sudo", "-n", "usbreset", device_path],
+                        capture_output=True,
+                        timeout=10
+                    )
+                    
+                    # Fallback to direct usbreset if sudo fails (running as root or desktop)
+                    if reset_result.returncode != 0 and b"password" not in reset_result.stderr.lower():
+                        reset_result = subprocess.run(
+                            ["usbreset", device_path],
+                            capture_output=True,
+                            timeout=10
+                        )
+                    
+                    if reset_result.returncode == 0:
+                        logger.info("[MicCapture] USB reset successful, waiting for re-enumeration...")
+                        time.sleep(2)  # Wait for device to re-enumerate
+                        return True
+                    else:
+                        logger.error("[MicCapture] USB reset failed: %s", reset_result.stderr)
+            
+            return False
+        except Exception as exc:
+            logger.debug("[MicCapture] USB reset attempt failed: %s", exc)
+            return False
+
     def start(self) -> None:
-        """Start the PyAudio input stream (idempotent)."""
+        """Start the PyAudio input stream (idempotent).
+        
+        If the stream fails to open with 'Unanticipated host error' (-9999),
+        attempts to reset the USB device and retry once.
+        """
         if self._running:
             return
 
@@ -135,15 +205,52 @@ class MicCapture:
             
             return (None, pyaudio.paContinue)
 
-        self._stream = self._pa.open(
-            format=pyaudio.paInt16,
-            channels=self._cap_ch,
-            rate=SAMPLE_RATE,
-            input=True,
-            input_device_index=self._dev_index,
-            frames_per_buffer=_CHUNK_SAMPLES,
-            stream_callback=_callback,
-        )
+        try:
+            self._stream = self._pa.open(
+                format=pyaudio.paInt16,
+                channels=self._cap_ch,
+                rate=SAMPLE_RATE,
+                input=True,
+                input_device_index=self._dev_index,
+                frames_per_buffer=_CHUNK_SAMPLES,
+                stream_callback=_callback,
+            )
+        except OSError as exc:
+            error_msg = str(exc)
+            
+            # Check for "Unanticipated host error" (-9999)
+            if "-9999" in error_msg or "Unanticipated host error" in error_msg:
+                logger.error("[MicCapture] USB audio device error (-9999): %s", exc)
+                
+                # Clean up before attempting reset
+                self._pa.terminate()
+                self._pa = None
+                
+                # Attempt USB reset
+                if self._reset_usb_device():
+                    logger.info("[MicCapture] Retrying stream open after USB reset...")
+                    
+                    # Re-initialize PyAudio after reset
+                    self._pa = pyaudio.PyAudio()
+                    
+                    # Retry opening the stream
+                    self._stream = self._pa.open(
+                        format=pyaudio.paInt16,
+                        channels=self._cap_ch,
+                        rate=SAMPLE_RATE,
+                        input=True,
+                        input_device_index=self._dev_index,
+                        frames_per_buffer=_CHUNK_SAMPLES,
+                        stream_callback=_callback,
+                    )
+                    logger.info("[MicCapture] Stream started successfully after USB reset")
+                else:
+                    raise RuntimeError(
+                        "USB audio device error (-9999). "
+                        "Try resetting manually: sudo usbreset 2886:0018"
+                    ) from exc
+            else:
+                raise
 
         self._stream.start_stream()
         self._running = True
