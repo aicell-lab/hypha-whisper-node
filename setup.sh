@@ -71,6 +71,24 @@ if ! $NO_SUDO; then
 fi
 
 # ---------------------------------------------------------------------------
+# 1c — USB reset permission for auto-recovery from -9999 error
+# ---------------------------------------------------------------------------
+if ! $NO_SUDO; then
+  SERVICE_USER="${SUDO_USER:-$USER}"
+  SUDOERS_FILE="/etc/sudoers.d/hypha-whisper-usb"
+  SUDOERS_RULE="$SERVICE_USER ALL=(ALL) NOPASSWD: /usr/bin/usbreset"
+  
+  if [[ ! -f "$SUDOERS_FILE" ]] || ! grep -q "$SUDOERS_RULE" "$SUDOERS_FILE" 2>/dev/null; then
+    info "Installing sudoers rule for USB reset (auto-recovery from -9999 error)..."
+    echo "$SUDOERS_RULE" > "$SUDOERS_FILE"
+    chmod 440 "$SUDOERS_FILE"
+    info "USB reset permission installed for user: $SERVICE_USER"
+  else
+    info "USB reset sudoers rule already exists, skipping."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 2 — pip (user-level)
 # ---------------------------------------------------------------------------
 if ! python3 -m pip --version &>/dev/null; then

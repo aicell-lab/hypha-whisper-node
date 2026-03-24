@@ -346,6 +346,11 @@ curl https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/health
    SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MODE="0666", GROUP="plugdev"
    ```
 4. **sudo Access**: Hardware tests require passwordless sudo for systemctl; configure via sudoers.d
+5. **USB Reset Permission**: Automatic ReSpeaker recovery requires passwordless `usbreset`:
+   ```
+   <username> ALL=(ALL) NOPASSWD: /usr/bin/usbreset
+   ```
+   This allows the service to recover from "Unanticipated host error" (-9999) without manual intervention.
 
 ---
 
@@ -416,6 +421,28 @@ systemctl --user daemon-reload
 **Service won't start (watchdog timeout)**
 - Check model loading time in logs: `journalctl -u hypha-whisper -n 50`
 - Increase `WatchdogSec` if using larger model
+
+**ReSpeaker 'Unanticipated host error' (-9999)**
+The ReSpeaker 4 Mic Array occasionally gets into a bad state requiring USB reset.
+The code automatically handles this, but requires sudo permission:
+
+1. **Setup (one-time):** Add sudoers rule for passwordless usbreset:
+   ```bash
+   echo "<username> ALL=(ALL) NOPASSWD: /usr/bin/usbreset" | sudo tee /etc/sudoers.d/hypha-whisper-usb
+   sudo chmod 440 /etc/sudoers.d/hypha-whisper-usb
+   ```
+
+2. **Automatic recovery:** When `-9999` error occurs, the service will:
+   - Detect the error automatically
+   - Run `sudo usbreset` on the ReSpeaker device
+   - Retry stream initialization once
+   - Continue normal operation
+
+3. **Manual recovery** (if auto-reset fails):
+   ```bash
+   sudo usbreset 2886:0018
+   sudo systemctl restart hypha-whisper
+   ```
 
 ### Log Locations
 - Application logs: `journalctl -u hypha-whisper -f`
