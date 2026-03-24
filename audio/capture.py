@@ -150,13 +150,15 @@ class MicCapture:
                     parts = line.split()
                     bus = parts[1]
                     device = parts[3].rstrip(":")
+                    # usbreset expects BBB/DDD format, not /dev/bus/usb/BBB/DDD
                     device_path = f"/dev/bus/usb/{bus}/{device}"
+                    usbreset_arg = f"{bus}/{device}"
                     
-                    logger.warning("[MicCapture] Attempting USB reset of %s", device_path)
+                    logger.warning("[MicCapture] Attempting USB reset of %s (bus/device: %s)", device_path, usbreset_arg)
                     
                     # Run usbreset (try sudo first for systemd service context)
                     reset_result = subprocess.run(
-                        ["sudo", "-n", "usbreset", device_path],
+                        ["sudo", "-n", "usbreset", usbreset_arg],
                         capture_output=True,
                         timeout=10
                     )
@@ -164,7 +166,7 @@ class MicCapture:
                     # Fallback to direct usbreset if sudo fails (running as root or desktop)
                     if reset_result.returncode != 0 and b"password" not in reset_result.stderr.lower():
                         reset_result = subprocess.run(
-                            ["usbreset", device_path],
+                            ["usbreset", usbreset_arg],
                             capture_output=True,
                             timeout=10
                         )
