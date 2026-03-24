@@ -174,11 +174,12 @@ class MicCapture:
                         time.sleep(2)  # Wait for device to re-enumerate
                         return True
                     else:
-                        logger.error("[MicCapture] USB reset failed: %s", reset_result.stderr)
+                        logger.error("[MicCapture] USB reset failed (rc=%d): %s", reset_result.returncode, reset_result.stderr)
+                        logger.error("[MicCapture] USB reset stdout: %s", reset_result.stdout)
             
             return False
         except Exception as exc:
-            logger.debug("[MicCapture] USB reset attempt failed: %s", exc)
+            logger.warning("[MicCapture] USB reset attempt failed: %s", exc, exc_info=True)
             return False
 
     def start(self) -> None:
@@ -231,19 +232,37 @@ class MicCapture:
                     logger.info("[MicCapture] Retrying stream open after USB reset...")
                     
                     # Re-initialize PyAudio after reset
+                    self._pa.terminate() if self._pa else None
                     self._pa = pyaudio.PyAudio()
                     
+                    # Re-scan for device index (it may have changed after USB reset)
+                    found = find_mic(self._dev_name if "ReSpeaker" in self._dev_name else None)
+                    if found:
+                        old_index = self._dev_index
+                        self._dev_index, self._dev_name, self._cap_ch, self._out_ch = found
+                        if self._dev_index != old_index:
+                            logger.info("[MicCapture] Device re-enumerated: index %d -> %d", old_index, self._dev_index)
+                    else:
+                        logger.warning("[MicCapture] Could not find mic after USB reset, trying with stored index %d", self._dev_index)
+                    
                     # Retry opening the stream
-                    self._stream = self._pa.open(
-                        format=pyaudio.paInt16,
-                        channels=self._cap_ch,
-                        rate=SAMPLE_RATE,
-                        input=True,
-                        input_device_index=self._dev_index,
-                        frames_per_buffer=_CHUNK_SAMPLES,
-                        stream_callback=_callback,
-                    )
-                    logger.info("[MicCapture] Stream started successfully after USB reset")
+                    try:
+                        self._stream = self._pa.open(
+                            format=pyaudio.paInt16,
+                            channels=self._cap_ch,
+                            rate=SAMPLE_RATE,
+                            input=True,
+                            input_device_index=self._dev_index,
+                            frames_per_buffer=_CHUNK_SAMPLES,
+                            stream_callback=_callback,
+                        )
+                        logger.info("[MicCapture] Stream started successfully after USB reset")
+                    except OSError as exc2:
+                        logger.error("[MicCapture] Stream still failed after USB reset: %s", exc2)
+                        raise RuntimeError(
+                            "USB audio device error (-9999) persists after reset. "
+                            "Try: sudo usbreset 2886:0018 && sudo systemctl restart hypha-whisper"
+                        ) from exc2
                 else:
                     raise RuntimeError(
                         "USB audio device error (-9999). "
