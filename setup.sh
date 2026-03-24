@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # setup.sh — one-shot install for hypha-whisper-node on Jetson devices
-# Supports: Jetson Orin Nano, Jetson AGX Orin (64GB), JetPack 6.x, CUDA 12.x, Python 3.10
+# Supports: Jetson AGX Orin (64GB), JetPack 6.x, CUDA 12.x, Python 3.10
 #
 # Usage:
 #   chmod +x setup.sh

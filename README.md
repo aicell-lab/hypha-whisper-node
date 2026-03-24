@@ -23,7 +23,7 @@ Captures speech via ReSpeaker 4 Mic Array, transcribes on-device using the Local
 
 | Component | Details |
 |---|---|
-| Compute | Jetson Orin Nano **or** Jetson AGX Orin 64GB (JetPack 6.x, CUDA 12.x) |
+| Compute | Jetson AGX Orin 64GB (JetPack 6.x, CUDA 12.x) |
 | Microphone | ReSpeaker 4 Mic Array v2.0 (UAC1.0, 16 kHz, beamformed ch0) |
 | Speaker (test) | Dell AC511 USB SoundBar **or** HDMI/DisplayPort monitor speakers |
 | Power | USB-C PD power bank |
@@ -188,7 +188,7 @@ python3 main.py --server ""
 
 ## Whisper Benchmarks
 
-### Jetson Orin Nano (2 s audio, GPU)
+### Jetson AGX Orin (2 s audio, GPU)
 
 | Model | Avg latency | Load time |
 |-------|------------|-----------|

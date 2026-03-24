@@ -176,7 +176,7 @@ def _try_import_speaker_registry():
 
 
 class _OptimizedWhisperTimestampedASR:
-    """Optimized whisper-timestamped backend for Jetson Orin Nano GPU.
+    """Optimized whisper-timestamped backend for Jetson AGX Orin GPU.
 
     Uses fp16 on CUDA, beam_size=3, and condition_on_previous_text=False
     for faster streaming transcription with LocalAgreement.

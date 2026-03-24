@@ -31,7 +31,6 @@ The system runs continuously as a systemd service, providing a live transcript v
 
 ### Target Hardware
 - **Compute**: 
-  - NVIDIA Jetson Orin Nano (JetPack 6.2, L4T R36.5, CUDA 12.6) — 8GB RAM
   - NVIDIA Jetson AGX Orin 64GB (JetPack 6.x, L4T R36.x, CUDA 12.x) — 64GB RAM, 275 TOPS
 - **Microphone**: ReSpeaker 4 Mic Array v2.0 (6-channel UAC1.0, 16 kHz, beamformed ch0)
 - **Fallback Mic**: HIK 1080P Camera USB microphone
@@ -525,5 +524,4 @@ doa.stop()
 - [whisper_streaming](https://github.com/ufal/whisper_streaming) — LocalAgreement streaming algorithm
 - [Hypha RPC](https://pypi.org/project/hypha-rpc/) — RPC framework for bioimaging
 - [ReSpeaker Mic Array v2.0](https://wiki.seeedstudio.com/ReSpeaker_Mic_Array_v2.0/) — Hardware docs
-- [Jetson Orin Nano](https://developer.nvidia.com/embedded/jetson-orin-nano-developer-kit) — NVIDIA docs
 - [Jetson AGX Orin](https://developer.nvidia.com/embedded/jetson-agx-orin-developer-kit) — NVIDIA docs

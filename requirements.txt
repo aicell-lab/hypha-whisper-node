@@ -1,5 +1,5 @@
 # hypha-whisper-node dependencies
-# Supports: Jetson Orin Nano, Jetson AGX Orin 64GB
+# Supports: Jetson AGX Orin 64GB
 # JetPack 6.x (L4T R36.x), CUDA 12.x, Python 3.10
 #
 # Step 1 — system packages (requires sudo):
