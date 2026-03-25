@@ -7,18 +7,20 @@ description: Interact with the hypha-whisper speech-to-text service at https://h
 
 This skill provides tools to interact with the hypha-whisper-node real-time speech-to-text service.
 
+## Important Note for Users
+
+**You need to physically be around the computer with the microphone array yourself.**
+
+This skill can check status and interact with the service endpoints, but it cannot:
+- Turn on the hardware for you
+- Connect the microphone array remotely  
+- Start the service on your behalf
+
+You must have the Jetson/microphone array hardware physically present, powered on, and the service running before this skill can be used. This is a local edge deployment, not a cloud service you can access remotely without the hardware.
+
 ## Service Overview
 
 The hypha-whisper-node is a portable, privacy-first speech-to-text edge node running on NVIDIA Jetson hardware. It uses **whisper-timestamped** (OpenAI Whisper) as the ASR backend with optimized fp16 inference on GPU.
-
-### Important Hardware Requirement
-
-**To use this service, you must have the actual hardware running:**
-- NVIDIA Jetson Orin Nano (or similar edge device) - for on-device inference
-- Microphone array (6-channel XMOS XVF-3000 DSP or ReSpeaker 4 Mic Array) - required for real-time streaming
-- Physical computer with the hardware connected and powered on
-
-The endpoints in this skill (live transcription, file upload, health checks) only work when the actual hardware node is deployed and running. This is not a cloud service - it's a physical edge device that must be on-site and operational.
 
 ### Backend Details
 - **ASR Engine:** whisper-timestamped (OpenAI Whisper)
