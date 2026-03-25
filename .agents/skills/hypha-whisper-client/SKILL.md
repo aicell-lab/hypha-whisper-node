@@ -9,7 +9,24 @@ This skill provides tools to interact with the hypha-whisper-node real-time spee
 
 ## Service Overview
 
-The hypha-whisper-node is a portable, privacy-first speech-to-text edge node running on NVIDIA Jetson hardware. It provides:
+The hypha-whisper-node is a portable, privacy-first speech-to-text edge node running on NVIDIA Jetson hardware. It uses **whisper-timestamped** (OpenAI Whisper) as the ASR backend with optimized fp16 inference on GPU.
+
+### Important Hardware Requirement
+
+**To use this service, you must have the actual hardware running:**
+- NVIDIA Jetson Orin Nano (or similar edge device) - for on-device inference
+- Microphone array (6-channel XMOS XVF-3000 DSP or ReSpeaker 4 Mic Array) - required for real-time streaming
+- Physical computer with the hardware connected and powered on
+
+The endpoints in this skill (live transcription, file upload, health checks) only work when the actual hardware node is deployed and running. This is not a cloud service - it's a physical edge device that must be on-site and operational.
+
+### Backend Details
+- **ASR Engine:** whisper-timestamped (OpenAI Whisper)
+- **Optimization:** fp16 on CUDA, beam_size=3, condition_on_previous_text=False
+- **VAD:** Silero VAD for voice activity detection
+- **Hallucination Filter:** Built-in filtering for repetition patterns
+
+### Capabilities
 
 - **Live real-time transcription** via SSE stream at `/transcript_feed`
 - **File upload transcription** via POST `/transcribe`
@@ -83,6 +100,44 @@ curl -X POST https://hypha.aicell.io/reef-imaging/apps/hypha-whisper/clear
 ## Python Examples
 
 See [references/python-examples.md](references/python-examples.md) for complete Python code examples.
+
+## Local File Transcription (Offline)
+
+For transcribing audio files locally using the same backend (without the service):
+
+```python
+#!/usr/bin/env python3
+"""Local transcription using whisper-timestamped backend."""
+import sys
+sys.path.insert(0, '/path/to/hypha-whisper-node')
+
+import numpy as np
+import librosa
+from transcribe.streaming_engine import StreamingEngine
+
+# Load audio
+audio, sr = librosa.load("recording.m4a", sr=16000, mono=True)
+
+# Create engine with whisper-timestamped backend
+engine = StreamingEngine(model_name="base.en", use_vac=True)
+engine.init_session()
+
+# Process audio chunks
+chunk_size = int(0.5 * 16000)  # 0.5s chunks
+for i in range(0, len(audio), chunk_size):
+    chunk = audio[i:i+chunk_size]
+    if len(chunk) > 0:
+        engine.process_audio(chunk)
+
+# Get final transcript
+final = engine.finish_session()
+print(final)
+```
+
+**Key differences from faster-whisper:**
+- Uses OpenAI Whisper + whisper-timestamped for word-level timestamps
+- Optimized with fp16 on CUDA, beam_size=3
+- Built-in hallucination filtering for streaming
 
 ## Troubleshooting
 
