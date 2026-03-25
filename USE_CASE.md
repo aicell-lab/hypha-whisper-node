@@ -1,6 +1,6 @@
 # Hypha-Whisper-Node Use Cases
 
-Local speech-to-text transcription using faster-whisper with optimized settings (beam_size=5, temperature=0.0).
+Local speech-to-text transcription using whisper-timestamped with optimized settings (beam_size=5, temperature=0.0).
 
 ---
 
@@ -58,14 +58,16 @@ Base Whisper model (base.en) with default settings (beam_size=1) produces these 
 ### Solution Applied
 
 ```python
-# Before (default)
-segments, info = model.transcribe(audio, beam_size=1)
+# Before (default in whisper_online.py)
+result = whisper_timestamped.transcribe_timestamped(
+    model, audio, language=language, 
+    initial_prompt=init_prompt, beam_size=1, ...
+)
 
 # After (optimized)
-segments, info = model.transcribe(
-    audio, 
-    beam_size=5, 
-    temperature=0.0
+result = whisper_timestamped.transcribe_timestamped(
+    model, audio, language=language,
+    initial_prompt=init_prompt, beam_size=5, temperature=0.0, ...
 )
 ```
 
@@ -104,20 +106,29 @@ Validating voice commands for lab automation systems.
 ### Code Implementation
 
 ```python
-from faster_whisper import WhisperModel
+import whisper
+import whisper_timestamped
 
-model = WhisperModel('base.en', device='cpu', compute_type='int8')
+# Load model
+model = whisper.load_model("base.en")
 
-# Process voice command
-segments, info = model.transcribe(
-    '/tmp/voice_command.ogg',
+# Process audio
+result = whisper_timestamped.transcribe_timestamped(
+    model, 
+    audio_path,
+    language="en",
     beam_size=5,
     temperature=0.0,
-    language='en'
+    initial_prompt=""
 )
 
-command = ' '.join([s.text for s in segments])
-print(f"Recognized: {command}")
+# Extract text with timestamps
+segments = result["segments"]
+for segment in segments:
+    start = segment["start"]
+    end = segment["end"]
+    text = segment["text"]
+    print(f"[{start:.1f}s - {end:.1f}s] {text}")
 
 # Output examples from testing:
 # "take images, run autofocus, acquire images with these three channels"
@@ -136,19 +147,23 @@ print(f"Recognized: {command}")
 
 ```bash
 # Install dependencies
-pip install faster-whisper
+pip install openai-whisper whisper-timestamped
 
 # Download model (auto-download on first use)
-# Models: base.en (74M), small.en (244M), medium.en (769M)
+# Models: tiny.en, base.en (default), small.en, medium.en, large
 ```
 
 ### Usage Options
 
 **Option 1: Direct Python (shown in examples above)**
 ```python
-from faster_whisper import WhisperModel
-model = WhisperModel('base.en', device='cpu', compute_type='int8')
-segments, info = model.transcribe(audio_file, beam_size=5, temperature=0.0)
+import whisper
+import whisper_timestamped
+
+model = whisper.load_model("base.en")
+result = whisper_timestamped.transcribe_timestamped(
+    model, audio_file, beam_size=5, temperature=0.0
+)
 ```
 
 **Option 2: Hypha-RPC Service**
