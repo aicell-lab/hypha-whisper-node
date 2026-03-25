@@ -9,14 +9,18 @@ This skill provides tools to interact with the hypha-whisper-node real-time spee
 
 ## Important Note for Users
 
-**You need to physically be around the computer with the microphone array yourself.**
+**For live real-time transcription, you need to physically be around the computer with the microphone array yourself.**
 
-This skill can check status and interact with the service endpoints, but it cannot:
+However, the **file upload transcription** (`/transcribe` endpoint) works remotely without the microphone - it just needs the Whisper model running on the hardware.
+
+This skill cannot:
 - Turn on the hardware for you
 - Connect the microphone array remotely  
 - Start the service on your behalf
 
-You must have the Jetson/microphone array hardware physically present, powered on, and the service running before this skill can be used. This is a local edge deployment, not a cloud service you can access remotely without the hardware.
+You must have the Jetson hardware physically present, powered on, and the service running before this skill can be used. This is a local edge deployment, not a cloud service you can access remotely without the hardware being operational.
+
+**Exception:** File upload transcription bypasses the microphone and works as long as the hardware node is running.
 
 ## Service Overview
 
