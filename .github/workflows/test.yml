@@ -40,7 +40,7 @@ jobs:
 
       - name: Run unit tests (no hardware, no slow)
         run: |
-          pytest -m "not hardware and not slow" \
+          pytest -m "not hardware and not slow and not integration" \
             --tb=short -v
         env:
           HYPHA_WORKSPACE_TOKEN: ${{ secrets.HYPHA_WORKSPACE_TOKEN }}
