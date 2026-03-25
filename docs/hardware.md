@@ -89,6 +89,46 @@ Uses SRP-PHAT (Steered Response Power - Phase Transform) algorithm on raw mic ch
 4. Estimate speaker direction at each commit
 5. Register speakers by angle (30° threshold)
 
+## 3D Printed Parts
+
+The `3d-printed-parts/` directory contains printable models for enclosure and mounting:
+
+```
+3d-printed-parts/
+├── fasteners/          # Screws and fasteners
+│   └── 35mm M3 Screw Socket Cap Screw.stl
+├── jetson-case/        # Jetson Orin Nano case (from Thingiverse #6436888)
+│   ├── files/
+│   │   ├── Nvidia_Jetson_Orin_Case_bottom.stl
+│   │   └── Nvidia_Jetson_Orin_Case_top.stl
+│   ├── images/
+│   ├── LICENSE.txt
+│   └── README.txt
+├── respeaker-case/     # ReSpeaker 4-Mic Array case
+│   ├── files/
+│   │   ├── respeaker.stl
+│   │   └── respeaker2.stl
+│   ├── images/
+│   ├── LICENSE.txt
+│   └── README.txt
+└── misc/               # Other useful parts
+    └── Rugged+box+parametric+DJI+Mini+v8+Lid.3mf
+```
+
+### Printing Recommendations
+
+| Part | Material | Settings | Notes |
+|------|----------|----------|-------|
+| Jetson Case | PLA/PETG | 0.2mm layer, 3 walls | Protects the dev kit |
+| ReSpeaker Case | PLA/PETG | 0.2mm layer, 20% infill | Allows sound through mic holes |
+| M3 Screws | PETG/ABS | 0.16mm layer, 4 walls | Functional parts need strength |
+
+### Sources & Licenses
+
+- **Jetson Orin Nano Case**: [Thingiverse #6436888](https://www.thingiverse.com/thing:6436888) by [Stoune](https://www.thingiverse.com/stoune/designs) — Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- **ReSpeaker Case**: Designed for ReSpeaker 4-Mic Array v2.0
+- **Rugged Box Lid**: Parametric rugged box design (check `misc/` for details)
+
 ## Troubleshooting
 
 | Issue | Solution |
