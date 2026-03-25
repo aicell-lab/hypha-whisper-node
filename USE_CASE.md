@@ -177,6 +177,16 @@ result = whisper_timestamped.transcribe_timestamped(
 - Returns JSON with segments and metadata
 - Use case: Direct integration with web applications
 
+### Important Hardware Note
+
+For endpoints and tools beyond basic file transcription (Use Case 3), you need the actual hardware deployment:
+
+- **Microphone array** (6-channel XMOS XVF-3000 DSP) - required for real-time streaming and DOA (Direction of Arrival) calculation
+- **Jetson Orin Nano** or similar edge device - for on-device inference
+- **Physical hardware setup** - the streaming engine and agent skills only work with the actual microphone array connected
+
+The file-based transcription examples (Use Cases 1-2) work on any computer, but live voice interfaces require the full hardware stack deployed on-site.
+
 ---
 
 *All transcription performed locally - no audio data sent to external APIs.*
