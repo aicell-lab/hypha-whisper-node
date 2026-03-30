@@ -1,9 +1,7 @@
 # hypha-whisper-node
 
 <p align="center">
-  <img src="assets/device_inside_case.jpg" alt="hypha-whisper-node inside protective case" width="45%">
-  &nbsp;&nbsp;
-  <img src="assets/device_top_view.jpg" alt="hypha-whisper-node top view with ReSpeaker mic array" width="45%">
+  <img src="assets/device.jpg" alt="hypha-whisper-node device" width="80%">
 </p>
 
 Portable real-time speech-to-text node powered by Whisper and NVIDIA Jetson.
