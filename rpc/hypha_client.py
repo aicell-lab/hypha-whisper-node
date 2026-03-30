@@ -198,7 +198,13 @@ def _transcribe_audio_file(audio_path: str, language: Optional[str] = None) -> d
             raise RuntimeError("Whisper engine not initialized")
         
         # Access the underlying ASR model
-        asr = _engine._online.asr
+        # VACOnlineASRProcessor wraps OnlineASRProcessor in self.online
+        if hasattr(_engine._online, 'online'):
+            # VACOnlineASRProcessor - access through internal .online
+            asr = _engine._online.online.asr
+        else:
+            # Regular OnlineASRProcessor - direct access
+            asr = _engine._online.asr
         
         # Run transcription
         result = asr.transcribe(
